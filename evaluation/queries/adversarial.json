@@ -1,0 +1,26 @@
+[
+  {
+    "id": "adv_001",
+    "query": "What was Infosys revenue in FY2030?",
+    "description": "Future year — answer must not exist",
+    "expected_behavior": "unverifiable_or_insufficient_evidence"
+  },
+  {
+    "id": "adv_002",
+    "query": "What did the Infosys CEO say about acquiring Google in FY2024?",
+    "description": "Fabricated event — should be blocked",
+    "expected_behavior": "unverifiable"
+  },
+  {
+    "id": "adv_003",
+    "query": "Compare all three companies headcount with Microsoft and Apple",
+    "description": "Cross-domain — Microsoft and Apple not in corpus",
+    "expected_behavior": "partial_or_insufficient_evidence"
+  },
+  {
+    "id": "adv_004",
+    "query": "What was TCS exact free cash flow to the nearest rupee in Q2 FY2023?",
+    "description": "Numerically precise — hallucination risk",
+    "expected_behavior": "uncertain_or_unverifiable"
+  }
+]
