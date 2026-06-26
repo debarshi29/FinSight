@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import structlog
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.middleware.guardrails import guardrails_middleware
 from api.routes import eval as eval_router
 from api.routes import ingest as ingest_router
 from api.routes import query as query_router
+from api.routes import query_stream as query_stream_router
 from core.config import settings
 from observability.tracer import setup_tracing
 
@@ -43,7 +46,12 @@ def create_app() -> FastAPI:
 
     app.include_router(ingest_router.router)
     app.include_router(query_router.router)
+    app.include_router(query_stream_router.router)
     app.include_router(eval_router.router)
+
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.exists():
+        app.mount("/ui", StaticFiles(directory=str(static_dir), html=True), name="static")
 
     @app.get("/health")
     async def health():

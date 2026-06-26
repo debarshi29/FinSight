@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FinSight</title>
+<meta name="description" content="Regulatory-grade financial intelligence. Every claim traced to a verbatim source.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:            #0c1117;
+    --surface:       #161c24;
+    --surface-high:  #1e2733;
+    --border:        #263040;
+    --border-subtle: #1c2432;
+    --text:          #e2eaf4;
+    --text-2:        #8a99ac;
+    --text-3:        #516070;
+    --accent:        #1a6fd4;
+    --accent-dim:    #122c50;
+    --verified:      #2da44e;
+    --verified-bg:   #0d2818;
+    --verified-dim:  #16a34a33;
+    --uncertain:     #c9891a;
+    --uncertain-bg:  #2a1d07;
+    --uncertain-dim: #ca8a0433;
+    --blocked:       #c0392b;
+    --blocked-bg:    #2a0d0a;
+    --mono:          'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    --sans:          -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  html { font-size: 14px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    min-height: 100vh;
+    padding-bottom: 80px;
+  }
+
+  /* ── Header ─────────────────────────────────────────── */
+  header {
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .logo {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: 0.04em;
+  }
+  .logo span { color: var(--accent); }
+  .header-meta {
+    font-size: 11px;
+    color: var(--text-3);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-left: auto;
+  }
+
+  /* ── Main layout ─────────────────────────────────────── */
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 32px 24px;
+  }
+
+  /* ── Query panel ─────────────────────────────────────── */
+  .query-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 24px;
+  }
+  .query-label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 10px;
+  }
+  .query-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  textarea {
+    flex: 1;
+    min-width: 0;
+    min-height: 72px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 10px 12px;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  textarea:focus { border-color: var(--accent); }
+  textarea::placeholder { color: var(--text-3); }
+
+  .filters {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+  input[type="text"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 7px 10px;
+    outline: none;
+    width: 160px;
+    transition: border-color 0.15s;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+  input[type="text"]::placeholder { color: var(--text-3); font-family: var(--sans); }
+
+  button#run-btn {
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 20px;
+    white-space: nowrap;
+    transition: background 0.15s, opacity 0.15s;
+    align-self: flex-start;
+    margin-top: 10px;
+  }
+  button#run-btn:hover { background: #1a5cb5; }
+  button#run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ── Progress feed ───────────────────────────────────── */
+  #progress {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 24px;
+  }
+  #progress.visible { display: block; }
+  .progress-title {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 12px;
+  }
+  .events {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+  .ev {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    padding: 5px 8px;
+    border-radius: 4px;
+    animation: fadein 0.2s ease;
+  }
+  @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .ev-ts { color: var(--text-3); flex-shrink: 0; min-width: 56px; font-variant-numeric: tabular-nums; }
+  .ev-tag {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    font-weight: 600;
+  }
+  .ev-tag.start    { background: var(--accent-dim); color: var(--accent); }
+  .ev-tag.planned  { background: #1e2c1e; color: #4ade80; }
+  .ev-tag.retrieved{ background: #1c2630; color: #60a5fa; }
+  .ev-tag.analyzed { background: #251e2c; color: #c084fc; }
+  .ev-tag.audited  { background: #221e14; color: var(--uncertain); }
+  .ev-tag.compared { background: #1e2530; color: #94a3b8; }
+  .ev-tag.done     { background: var(--verified-bg); color: var(--verified); }
+  .ev-tag.error    { background: var(--blocked-bg); color: var(--blocked); }
+  .ev-msg { color: var(--text-2); flex: 1; }
+
+  /* ── Results ─────────────────────────────────────────── */
+  #results { display: none; }
+  #results.visible { display: block; }
+
+  .result-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .result-header h2 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .pill {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-weight: 600;
+    font-family: var(--mono);
+  }
+  .pill.verified  { background: var(--verified-bg);  color: var(--verified); border: 1px solid #2da44e44; }
+  .pill.uncertain { background: var(--uncertain-bg); color: var(--uncertain); border: 1px solid #c9891a44; }
+  .pill.blocked   { background: var(--blocked-bg);   color: var(--blocked);   border: 1px solid #c0392b44; }
+  .latency {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-3);
+  }
+
+  /* ── Summary card ────────────────────────────────────── */
+  .summary-card {
+    background: var(--surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+  }
+  .summary-card h3 {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 14px;
+  }
+  .summary-body {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-2);
+    white-space: pre-wrap;
+  }
+
+  /* ── Plan tags ───────────────────────────────────────── */
+  .plan-card {
+    background: var(--surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+  }
+  .plan-card h3 {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 12px;
+  }
+  .plan-subtasks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .subtask-tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--accent-dim);
+    color: #7db8f5;
+    border-radius: 4px;
+    padding: 3px 8px;
+    border: 1px solid #1a6fd422;
+  }
+
+  /* ── Claim sections ──────────────────────────────────── */
+  .section-label {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border-subtle);
+  }
+
+  .claims-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+
+  .claim-card {
+    border-radius: 7px;
+    border-left: 3px solid transparent;
+    background: var(--surface);
+    border: 1px solid var(--border-subtle);
+    overflow: hidden;
+  }
+  .claim-card.verified  { border-left-color: var(--verified); }
+  .claim-card.uncertain { border-left-color: var(--uncertain); }
+
+  .claim-top {
+    padding: 14px 16px 10px;
+  }
+  .claim-text {
+    font-size: 14px;
+    color: var(--text);
+    line-height: 1.55;
+    margin-bottom: 10px;
+  }
+  .claim-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .meta-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    background: var(--surface-high);
+    color: var(--text-2);
+    border: 1px solid var(--border-subtle);
+    white-space: nowrap;
+  }
+  .meta-tag.section-af  { background: #0d2818; color: #5cb876; border-color: #2da44e22; }
+  .meta-tag.section-mda { background: #122030; color: #60a5fa; border-color: #1a6fd422; }
+  .meta-tag.section-notes { background: #1e1e30; color: #a78bfa; border-color: #7c3aed22; }
+  .meta-tag.section-letter { background: #221e14; color: #f59e0b; border-color: #b45a0022; }
+
+  .confidence-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+  .conf-bar-track {
+    width: 80px;
+    height: 4px;
+    background: var(--surface-high);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .conf-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+  .conf-val {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+    min-width: 36px;
+    text-align: right;
+  }
+
+  .claim-snippet {
+    padding: 10px 16px 14px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg);
+  }
+  .snippet-src {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-3);
+    margin-bottom: 6px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .snippet-text {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-2);
+    line-height: 1.6;
+    border-left: 2px solid var(--border);
+    padding-left: 10px;
+  }
+  .reason-text {
+    font-size: 11px;
+    color: var(--text-3);
+    margin-top: 6px;
+    padding-left: 12px;
+    font-style: italic;
+  }
+
+  /* ── Blocked section ─────────────────────────────────── */
+  .blocked-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 24px;
+  }
+  .blocked-item {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: #e07070;
+    background: var(--blocked-bg);
+    border: 1px solid #c0392b22;
+    border-radius: 5px;
+    padding: 8px 12px;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .blocked-icon { color: #c0392b; flex-shrink: 0; }
+
+  /* ── Error state ─────────────────────────────────────── */
+  .error-banner {
+    background: var(--blocked-bg);
+    border: 1px solid #c0392b44;
+    border-radius: 8px;
+    padding: 16px 20px;
+    color: #e07070;
+    font-size: 13px;
+    margin-bottom: 20px;
+    display: none;
+  }
+  .error-banner.visible { display: block; }
+
+  /* ── Empty state ─────────────────────────────────────── */
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-3);
+  }
+  .empty-state p { font-size: 13px; margin-top: 8px; }
+  .empty-qs {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 580px;
+    margin: 28px auto 0;
+    text-align: left;
+  }
+  .qs-btn {
+    background: var(--surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    color: var(--text-2);
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 12px;
+    padding: 10px 14px;
+    text-align: left;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .qs-btn:hover { border-color: var(--accent); background: var(--surface-high); }
+
+  /* ── Scrollbar ───────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  @media (max-width: 600px) {
+    main { padding: 20px 16px; }
+    .query-row { flex-direction: column; }
+    button#run-btn { width: 100%; margin-top: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Fin<span>Sight</span></div>
+  <div class="header-meta">Regulatory-Grade Financial Intelligence</div>
+</header>
+
+<main>
+
+  <div class="query-panel">
+    <div class="query-label">Analysis Query</div>
+    <div class="query-row">
+      <textarea id="query-input" rows="3"
+        placeholder="Compare Infosys and TCS operating margins FY2022–2024 and flag any anomalies or risk disclosures related to margin pressure."></textarea>
+    </div>
+    <div class="filters">
+      <input type="text" id="company-filter" placeholder="Company filter (e.g. Infosys)">
+      <input type="text" id="fy-filter" placeholder="Fiscal year (e.g. 2024)">
+      <button id="run-btn">Run Analysis</button>
+    </div>
+  </div>
+
+  <div id="error-banner" class="error-banner"></div>
+
+  <div id="progress">
+    <div class="progress-title">Agent Pipeline</div>
+    <div class="events" id="event-list"></div>
+  </div>
+
+  <div id="results">
+    <!-- populated by JS -->
+  </div>
+
+  <div id="empty-state" class="empty-state">
+    <div style="font-size:28px;opacity:.2">⬡</div>
+    <p>Enter a query above to begin analysis.</p>
+    <div class="empty-qs">
+      <button class="qs-btn">Compare Infosys and TCS operating margins FY2022–2024 and flag any anomalies</button>
+      <button class="qs-btn">What were the key revenue drivers for Wipro in FY2024 and how did they differ from FY2022?</button>
+      <button class="qs-btn">Identify all mentions of attrition risk across all three companies in FY2023</button>
+      <button class="qs-btn">What guidance did each company provide for FY2025 capex vs actual FY2024 capex?</button>
+    </div>
+  </div>
+
+</main>
+
+<script>
+const btn       = document.getElementById('run-btn');
+const qInput    = document.getElementById('query-input');
+const coFilter  = document.getElementById('company-filter');
+const fyFilter  = document.getElementById('fy-filter');
+const progress  = document.getElementById('progress');
+const evList    = document.getElementById('event-list');
+const results   = document.getElementById('results');
+const errBanner = document.getElementById('error-banner');
+const emptyState= document.getElementById('empty-state');
+
+// Quick-start buttons
+document.querySelectorAll('.qs-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    qInput.value = b.textContent;
+    qInput.focus();
+  });
+});
+
+function ts() {
+  const now = new Date();
+  return now.toTimeString().slice(0,8);
+}
+
+function addEvent(type, msg) {
+  const ev = document.createElement('div');
+  ev.className = 'ev';
+  ev.innerHTML = `<span class="ev-ts">${ts()}</span><span class="ev-tag ${type}">${type.toUpperCase()}</span><span class="ev-msg">${msg}</span>`;
+  evList.appendChild(ev);
+  evList.scrollTop = evList.scrollHeight;
+}
+
+function sectionClass(st) {
+  const map = { audited_financials: 'section-af', mda: 'section-mda', notes: 'section-notes', letter: 'section-letter' };
+  return map[st] || '';
+}
+
+function confColor(score) {
+  if (score >= 0.65) return 'var(--verified)';
+  if (score >= 0.50) return 'var(--uncertain)';
+  return 'var(--blocked)';
+}
+
+function buildClaimCard(c, status) {
+  const cit = c.citation || {};
+  const conf = cit.confidence || 0;
+  const pct  = Math.round(conf * 100);
+  const st   = cit.section_type || 'unknown';
+  const stLabel = { audited_financials: 'AUDITED FINANCIALS', mda: 'MD&A', notes: 'NOTES', letter: 'LETTER', unknown: 'UNKNOWN' }[st] || st.toUpperCase();
+
+  const card = document.createElement('div');
+  card.className = `claim-card ${status}`;
+  card.innerHTML = `
+    <div class="claim-top">
+      <div class="claim-text">${esc(c.claim)}</div>
+      <div class="claim-meta">
+        <span class="meta-tag">pg ${cit.page || '—'}</span>
+        <span class="meta-tag ${sectionClass(st)}">${stLabel}</span>
+        <div class="confidence-wrap">
+          <div class="conf-bar-track"><div class="conf-bar-fill" style="width:${pct}%;background:${confColor(conf)}"></div></div>
+          <span class="conf-val">${pct}%</span>
+        </div>
+      </div>
+    </div>
+    ${cit.snippet ? `
+    <div class="claim-snippet">
+      <div class="snippet-src">
+        <span>${esc(cit.document || 'unknown')}</span>
+      </div>
+      <div class="snippet-text">${esc(cit.snippet)}</div>
+      ${c.audit_reason ? `<div class="reason-text">${esc(c.audit_reason)}</div>` : ''}
+    </div>` : ''}
+  `;
+  return card;
+}
+
+function renderResults(data) {
+  const verified  = data.verified_claims  || [];
+  const uncertain = data.uncertain_claims || [];
+  const audit     = data.audit_log        || {};
+  const blocked   = audit.blocked_unverifiable || [];
+  const plan      = audit.plan || [];
+  const latency   = audit.latency_ms;
+
+  results.innerHTML = '';
+
+  // Header row
+  const hdr = document.createElement('div');
+  hdr.className = 'result-header';
+  hdr.innerHTML = `
+    <h2>Analysis Results</h2>
+    <span class="pill verified">${verified.length} VERIFIED</span>
+    <span class="pill uncertain">${uncertain.length} UNCERTAIN</span>
+    ${blocked.length ? `<span class="pill blocked">${blocked.length} BLOCKED</span>` : ''}
+    ${latency ? `<span class="latency">${latency}ms</span>` : ''}
+  `;
+  results.appendChild(hdr);
+
+  // Plan
+  if (plan.length) {
+    const pc = document.createElement('div');
+    pc.className = 'plan-card';
+    pc.innerHTML = `<h3>Execution Plan</h3><div class="plan-subtasks">${plan.map(s => `<span class="subtask-tag">${esc(s)}</span>`).join('')}</div>`;
+    results.appendChild(pc);
+  }
+
+  // Summary
+  if (data.summary) {
+    const sc = document.createElement('div');
+    sc.className = 'summary-card';
+    sc.innerHTML = `<h3>Summary</h3><div class="summary-body">${esc(data.summary)}</div>`;
+    results.appendChild(sc);
+  }
+
+  // Verified claims
+  if (verified.length) {
+    const label = document.createElement('div');
+    label.className = 'section-label';
+    label.textContent = `Verified Claims — ${verified.length}`;
+    results.appendChild(label);
+    const grid = document.createElement('div');
+    grid.className = 'claims-grid';
+    verified.forEach(c => grid.appendChild(buildClaimCard(c, 'verified')));
+    results.appendChild(grid);
+  }
+
+  // Uncertain claims
+  if (uncertain.length) {
+    const label = document.createElement('div');
+    label.className = 'section-label';
+    label.textContent = `Uncertain Claims — ${uncertain.length}`;
+    results.appendChild(label);
+    const grid = document.createElement('div');
+    grid.className = 'claims-grid';
+    uncertain.forEach(c => grid.appendChild(buildClaimCard(c, 'uncertain')));
+    results.appendChild(grid);
+  }
+
+  // Blocked
+  if (blocked.length) {
+    const label = document.createElement('div');
+    label.className = 'section-label';
+    label.textContent = `Blocked — Unverifiable`;
+    results.appendChild(label);
+    const list = document.createElement('div');
+    list.className = 'blocked-list';
+    blocked.forEach(b => {
+      const item = document.createElement('div');
+      item.className = 'blocked-item';
+      item.innerHTML = `<span class="blocked-icon">✕</span>${esc(b)}`;
+      list.appendChild(item);
+    });
+    results.appendChild(list);
+  }
+
+  results.classList.add('visible');
+}
+
+function esc(s) {
+  if (typeof s !== 'string') s = String(s || '');
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function showError(msg) {
+  errBanner.textContent = msg;
+  errBanner.classList.add('visible');
+}
+
+async function runQuery() {
+  const query = qInput.value.trim();
+  if (!query) { qInput.focus(); return; }
+
+  // Reset
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  errBanner.classList.remove('visible');
+  evList.innerHTML = '';
+  results.classList.remove('visible');
+  results.innerHTML = '';
+  progress.classList.add('visible');
+  emptyState.style.display = 'none';
+
+  const body = {
+    query,
+    company_filter: coFilter.value.trim() || null,
+    fiscal_year_filter: fyFilter.value.trim() || null,
+  };
+
+  let subtasks = [];
+
+  try {
+    const resp = await fetch('/query/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!resp.ok) {
+      const t = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${t}`);
+    }
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let   buf     = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      const lines = buf.split('\n');
+      buf = lines.pop(); // keep incomplete line
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+
+        switch (ev.event) {
+          case 'start':
+            addEvent('start', `task ${ev.task_id ? ev.task_id.slice(0,8) : '—'} — query accepted`);
+            break;
+          case 'planned':
+            subtasks = ev.subtasks || [];
+            addEvent('planned', `${subtasks.length} subtask${subtasks.length !== 1 ? 's' : ''}: ${subtasks.map(s => `"${s.slice(0,40)}${s.length>40?'…':''}"` ).join(' · ')}`);
+            break;
+          case 'retrieved':
+            addEvent('retrieved', `${ev.subtask ? ev.subtask.slice(0,50) : '?'} — ${ev.chunks} chunk${ev.chunks !== 1 ? 's' : ''}`);
+            break;
+          case 'analyzed':
+            addEvent('analyzed', `${ev.subtask ? ev.subtask.slice(0,50) : '?'} — ${ev.claims} claim${ev.claims !== 1 ? 's' : ''} extracted`);
+            break;
+          case 'audited':
+            addEvent('audited', `verified ${ev.verified}  uncertain ${ev.uncertain}  blocked ${ev.blocked}`);
+            break;
+          case 'compared':
+            addEvent('compared', `${ev.deltas} delta${ev.deltas !== 1 ? 's' : ''} computed`);
+            break;
+          case 'done':
+            addEvent('done', 'synthesis complete');
+            if (ev.result) renderResults(ev.result);
+            break;
+          case 'error':
+            addEvent('error', `${ev.stage}: ${ev.detail}`);
+            showError(`Pipeline error in ${ev.stage}: ${ev.detail}`);
+            break;
+        }
+      }
+    }
+  } catch (err) {
+    showError(err.message || 'Unexpected error — is the API running?');
+    addEvent('error', err.message || 'connection failed');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Analysis';
+  }
+}
+
+btn.addEventListener('click', runQuery);
+qInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runQuery();
+});
+</script>
+
+</body>
+</html>
