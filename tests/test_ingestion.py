@@ -29,3 +29,35 @@ def test_detect_company():
     assert detect_company("Infosys_AR_2024.pdf") == "Infosys"
     assert detect_company("TCS_Annual_Report_2024.pdf") == "TCS"
     assert detect_company("Wipro_FY2024.pdf") == "Wipro"
+
+
+def test_detect_company_tata_consultancy_alias():
+    assert detect_company("tata_consultancy_services_2024.pdf") == "TCS"
+
+
+def test_detect_company_unknown():
+    assert detect_company("random_document.pdf") == ""
+
+
+def test_detect_section_type_notes():
+    st = detect_section_type("Note 5: Accounting Policies and Significant Judgements")
+    assert st == SectionType.NOTES
+
+
+def test_detect_section_type_unknown():
+    st = detect_section_type("Page 1 of 200 — Cover Page")
+    assert st == SectionType.UNKNOWN
+
+
+def test_detect_fiscal_year_fy_prefix():
+    assert "2023" in detect_fiscal_year("FY2023 annual results")
+
+
+def test_detect_fiscal_year_no_match():
+    assert detect_fiscal_year("No year in this string at all") == ""
+
+
+def test_detect_section_type_heading_context():
+    # The section heading should influence classification even if body text is neutral
+    st = detect_section_type("Total revenue was 500bn", "Balance Sheet")
+    assert st == SectionType.AUDITED_FINANCIALS

@@ -8,7 +8,8 @@ from rank_bm25 import BM25Okapi
 
 def _tokenize(text: str) -> list[str]:
     text = text.lower()
-    tokens = re.findall(r"\b[a-z0-9][a-z0-9.%]*\b", text)
+    # No trailing \b: allows % to be included as part of financial tokens (e.g. "20.7%")
+    tokens = re.findall(r"\b[a-z0-9][a-z0-9.%]*", text)
     return tokens
 
 

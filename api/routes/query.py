@@ -58,12 +58,16 @@ async def run_query(req: QueryRequest):
 
     for subtask in subtasks:
         # ── RetrieverAgent — SK native plugin ────────────────────────────────
-        # KernelArguments carries the subtask string into the plugin function.
+        # KernelArguments carries the subtask + optional scope filters forward.
         agents_invoked.append("RetrieverAgent")
         retrieve_result = await kernel.invoke(
             plugin_name="Retriever",
             function_name="retrieve",
-            arguments=KernelArguments(subtask=subtask),
+            arguments=KernelArguments(
+                subtask=subtask,
+                company_filter=req.company_filter or "",
+                fiscal_year_filter=req.fiscal_year_filter or "",
+            ),
         )
         chunks_json = str(retrieve_result)
 

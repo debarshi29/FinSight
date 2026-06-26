@@ -52,3 +52,53 @@ def test_audited_claim_statuses():
         )
         d = claim.to_dict()
         assert d["audit_status"] == status.value
+
+
+def test_citation_snippet_preserved():
+    c = Citation(
+        document="infosys_ar.pdf",
+        page=12,
+        snippet="Operating profit margin for FY2024 stood at 20.7%",
+        claim="Infosys operating margin FY2024 was 20.7%",
+        confidence=0.91,
+        section_type="audited_financials",
+    )
+    d = c.to_dict()
+    assert "20.7%" in d["snippet"]
+    assert d["page"] == 12
+    assert d["section_type"] == "audited_financials"
+
+
+def test_chunk_section_type_enum_roundtrip():
+    for st in SectionType:
+        chunk = Chunk(
+            chunk_id="c1",
+            doc_id="doc1",
+            source="test.pdf",
+            text="text",
+            page=1,
+            section="Section",
+            section_type=st,
+            token_count=1,
+        )
+        payload = chunk.to_payload()
+        assert payload["section_type"] == st.value
+        chunk2 = Chunk.from_payload(payload)
+        assert chunk2.section_type == st
+
+
+def test_chunk_missing_optional_fields_defaults():
+    payload = {
+        "chunk_id": "c1",
+        "doc_id": "doc1",
+        "source": "test.pdf",
+        "text": "text",
+        "page": 1,
+        "section": "section",
+        "section_type": "unknown",
+        "token_count": 1,
+        # fiscal_year and company intentionally absent
+    }
+    chunk = Chunk.from_payload(payload)
+    assert chunk.fiscal_year == ""
+    assert chunk.company == ""

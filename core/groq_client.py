@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
 import openai
 
 from core.config import settings
+
+_log = logging.getLogger(__name__)
+
+_RETRY_DELAYS = [1.0, 2.0, 4.0]  # seconds between retries on rate-limit
 
 
 def get_groq_async_client() -> openai.AsyncOpenAI:
@@ -20,7 +27,7 @@ async def chat_completion(
     response_format: dict | None = None,
 ) -> str:
     client = get_groq_async_client()
-    kwargs = {
+    kwargs: dict = {
         "model": model or settings.groq_model,
         "messages": messages,
         "temperature": temperature,
@@ -29,5 +36,20 @@ async def chat_completion(
     if response_format:
         kwargs["response_format"] = response_format
 
-    response = await client.chat.completions.create(**kwargs)
-    return response.choices[0].message.content or ""
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
+        if delay:
+            _log.warning("groq.rate_limit_retry", attempt=attempt, delay=delay)
+            await asyncio.sleep(delay)
+        try:
+            response = await client.chat.completions.create(**kwargs)
+            return response.choices[0].message.content or ""
+        except openai.RateLimitError as exc:
+            last_exc = exc
+        except openai.APIStatusError as exc:
+            if exc.status_code == 503:
+                last_exc = exc
+            else:
+                raise
+
+    raise RuntimeError(f"Groq API failed after {len(_RETRY_DELAYS) + 1} attempts") from last_exc

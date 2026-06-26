@@ -88,7 +88,8 @@ def detect_fiscal_year(text: str) -> str:
 
 
 def detect_company(source_filename: str, text: str = "") -> str:
-    combined = (source_filename + " " + text[:200]).lower()
+    # Normalise underscores/hyphens to spaces so "tata_consultancy_services" matches "tata consultancy"
+    combined = (source_filename + " " + text[:200]).lower().replace("_", " ").replace("-", " ")
     for hint, name in _COMPANY_HINTS.items():
         if hint in combined:
             return name

@@ -31,11 +31,22 @@ class RetrieverPlugin:
             self._bm25 = BM25Retriever(self._all_payloads)
 
     @kernel_function(name="retrieve", description="Retrieve relevant chunks for a subtask query")
-    async def retrieve(self, subtask: str) -> str:
+    async def retrieve(
+        self,
+        subtask: str,
+        company_filter: str = "",
+        fiscal_year_filter: str = "",
+    ) -> str:
         """Returns a JSON string of ranked chunks with citations."""
-        ranked = await retrieve_chunks(subtask, self._store)
         import json
 
+        filters: dict[str, str] = {}
+        if company_filter:
+            filters["company"] = company_filter
+        if fiscal_year_filter:
+            filters["fiscal_year"] = fiscal_year_filter
+
+        ranked = await retrieve_chunks(subtask, self._store, filters=filters or None)
         return json.dumps(
             [
                 {
@@ -57,6 +68,7 @@ async def retrieve_chunks(
     query: str,
     store: QdrantStore | None = None,
     top_k: int | None = None,
+    filters: dict[str, str] | None = None,
 ) -> list[RankedChunk]:
     store = store or QdrantStore()
     top_k = top_k or settings.retrieval_top_k
@@ -68,12 +80,24 @@ async def retrieve_chunks(
         log.warning("retriever.empty_collection")
         return []
 
-    bm25 = BM25Retriever(all_payloads)
+    # For BM25, filter payloads in-memory to match Qdrant filter semantics
+    bm25_payloads = all_payloads
+    if filters:
+        bm25_payloads = [
+            p
+            for p in all_payloads
+            if all(p.get(k, "").lower() == v.lower() for k, v in filters.items() if v)
+        ]
+        if not bm25_payloads:
+            log.warning("retriever.filter_no_match", filters=filters)
+            return []
+
+    bm25 = BM25Retriever(bm25_payloads)
     query_vec = embed_query(query)
 
     bm25_results, dense_results = await asyncio.gather(
         asyncio.to_thread(bm25.search, query, top_k),
-        store.dense_search(query_vec, top_k),
+        store.dense_search(query_vec, top_k, filters=filters),
     )
 
     fused = reciprocal_rank_fusion([bm25_results, dense_results])
@@ -83,6 +107,7 @@ async def retrieve_chunks(
     log.info(
         "retriever.complete",
         query=query[:60],
+        filters=filters,
         bm25_hits=len(bm25_results),
         dense_hits=len(dense_results),
         fused=len(fused),

@@ -46,3 +46,43 @@ def test_rrf_k_parameter():
     list_b = [{"score": 1.0, "payload": {"chunk_id": "c1", "text": "a"}}]
     fused = reciprocal_rank_fusion([list_a, list_b], k=60)
     assert fused[0]["score"] == pytest.approx(2 / 61, rel=1e-4)
+
+
+def test_rrf_empty_lists():
+    assert reciprocal_rank_fusion([[], []]) == []
+
+
+def test_rrf_single_list():
+    items = [
+        {"score": 0.9, "payload": {"chunk_id": "c1", "text": "a"}},
+        {"score": 0.5, "payload": {"chunk_id": "c2", "text": "b"}},
+    ]
+    fused = reciprocal_rank_fusion([items])
+    assert len(fused) == 2
+    # With a single list, rank 1 should score higher than rank 2
+    assert fused[0]["score"] > fused[1]["score"]
+
+
+def test_rrf_rank1_beats_rank2():
+    list_a = [
+        {"score": 0.9, "payload": {"chunk_id": "c1", "text": "a"}},
+        {"score": 0.8, "payload": {"chunk_id": "c2", "text": "b"}},
+    ]
+    list_b = [
+        {"score": 0.7, "payload": {"chunk_id": "c2", "text": "b"}},
+        {"score": 0.6, "payload": {"chunk_id": "c1", "text": "a"}},
+    ]
+    fused = reciprocal_rank_fusion([list_a, list_b])
+    # c1 is rank-1 in list_a and rank-2 in list_b; c2 is rank-2 in list_a and rank-1 in list_b
+    # c1 score: 1/61 + 1/62  ≈ 0.0324
+    # c2 score: 1/62 + 1/61  same
+    # tied — both should be present
+    ids = {f["payload"]["chunk_id"] for f in fused}
+    assert ids == {"c1", "c2"}
+
+
+def test_rrf_unique_chunks_per_list_only():
+    list_a = [{"score": 0.9, "payload": {"chunk_id": "c1", "text": "a"}}]
+    list_b = [{"score": 0.9, "payload": {"chunk_id": "c2", "text": "b"}}]
+    fused = reciprocal_rank_fusion([list_a, list_b])
+    assert len(fused) == 2
