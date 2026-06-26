@@ -14,9 +14,7 @@ def _is_heading(span: dict, body_size: float) -> bool:
 def _block_text(block: dict) -> str:
     if "lines" not in block:
         return ""
-    return "\n".join(
-        "".join(span["text"] for span in line["spans"]) for line in block["lines"]
-    )
+    return "\n".join("".join(span["text"] for span in line["spans"]) for line in block["lines"])
 
 
 def _body_size(blocks: list[dict]) -> float:
@@ -34,9 +32,7 @@ def _body_size(blocks: list[dict]) -> float:
 
 
 def _make_chunk_id(doc_id: str, page: int, index: int, text: str) -> str:
-    h = hashlib.sha256(f"{doc_id}:{page}:{index}:{text[:100]}".encode()).hexdigest()[
-        :12
-    ]
+    h = hashlib.sha256(f"{doc_id}:{page}:{index}:{text[:100]}".encode()).hexdigest()[:12]
     return f"{doc_id}_p{page}_c{index}_{h}"
 
 
@@ -77,9 +73,7 @@ def chunk_document(
             if not words:
                 continue
 
-            first_span = (
-                block["lines"][0]["spans"][0] if block["lines"][0].get("spans") else {}
-            )
+            first_span = block["lines"][0]["spans"][0] if block["lines"][0].get("spans") else {}
             is_head = first_span and _is_heading(first_span, body_size)
 
             if is_head and len(current_tokens) >= overlap_tokens:

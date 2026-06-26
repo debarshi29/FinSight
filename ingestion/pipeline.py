@@ -36,9 +36,7 @@ async def ingest_pdf(
 
     embedder = get_embedder()
     texts = [c.text for c in chunks]
-    embeddings = embedder.encode(
-        texts, normalize_embeddings=True, show_progress_bar=True
-    )
+    embeddings = embedder.encode(texts, normalize_embeddings=True, show_progress_bar=True)
 
     store = QdrantStore()
     await store.ensure_collection()

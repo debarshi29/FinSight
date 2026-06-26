@@ -28,6 +28,4 @@ def reciprocal_rank_fusion(
             payloads[chunk_id] = payload
 
     fused = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [
-        {"score": score, "payload": payloads[chunk_id]} for chunk_id, score in fused
-    ]
+    return [{"score": score, "payload": payloads[chunk_id]} for chunk_id, score in fused]

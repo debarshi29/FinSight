@@ -35,9 +35,7 @@ class QdrantStore:
                 vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
             )
 
-    async def upsert_chunks(
-        self, chunks: list[Chunk], embeddings: list[list[float]]
-    ) -> None:
+    async def upsert_chunks(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
         points = [
             PointStruct(
                 id=abs(hash(chunk.chunk_id)) % (10**15),
@@ -57,8 +55,7 @@ class QdrantStore:
         qdrant_filter = None
         if filters:
             conditions = [
-                FieldCondition(key=k, match=MatchValue(value=v))
-                for k, v in filters.items()
+                FieldCondition(key=k, match=MatchValue(value=v)) for k, v in filters.items()
             ]
             qdrant_filter = Filter(must=conditions)
 

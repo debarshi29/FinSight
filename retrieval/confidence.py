@@ -72,9 +72,7 @@ def _cross_filing_score(
     company = payload.get("company", "")
     if not company:
         return 0.5
-    same_company_docs = {
-        p.get("doc_id") for p in all_payloads if p.get("company") == company
-    }
+    same_company_docs = {p.get("doc_id") for p in all_payloads if p.get("company") == company}
     if len(same_company_docs) >= 3:
         return 1.0
     elif len(same_company_docs) == 2:

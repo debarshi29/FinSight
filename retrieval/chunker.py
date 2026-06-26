@@ -20,9 +20,7 @@ def is_heading(span: dict, body_size: float) -> bool:
 def extract_block_text(block: dict) -> str:
     if "lines" not in block:
         return ""
-    return "\n".join(
-        "".join(span["text"] for span in line["spans"]) for line in block["lines"]
-    )
+    return "\n".join("".join(span["text"] for span in line["spans"]) for line in block["lines"])
 
 
 def get_body_size(blocks: list[dict]) -> float:
@@ -102,9 +100,7 @@ if __name__ == "__main__":
     pages = []
     for page_num in range(len(doc)):
         page = doc[page_num]
-        pages.append(
-            {"page_num": page_num + 1, "blocks": page.get_text("dict")["blocks"]}
-        )
+        pages.append({"page_num": page_num + 1, "blocks": page.get_text("dict")["blocks"]})
 
     chunks = chunk_document(pages, "test-doc", "test.pdf")
     for c in chunks[:5]:
