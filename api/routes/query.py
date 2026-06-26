@@ -8,15 +8,12 @@ from pathlib import Path
 import structlog
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from semantic_kernel import KernelArguments
 
-from agents.analyst import analyze_chunks
-from agents.auditor import audit_claims
-from agents.comparator import compare_results
-from agents.retriever import retrieve_chunks
-from agents.router import plan_task
 from agents.synthesizer import synthesize_report
 from core.config import settings
-from core.models import AnalysisReport, AuditLog
+from core.models import AnalysisReport, AuditedClaim, AuditLog, AuditStatus, Citation
+from core.sk_kernel import get_kernel
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/query", tags=["query"])
@@ -36,61 +33,107 @@ async def run_query(req: QueryRequest):
 
     task_id = str(uuid.uuid4())
     start_ms = time.time()
-    agents_invoked = []
+    agents_invoked: list[str] = []
 
+    # The kernel is the single orchestration point — every agent hop goes
+    # through kernel.invoke() with KernelArguments passing context forward.
+    kernel = get_kernel()
     log.info("query.start", task_id=task_id, query=req.query[:100])
 
-    # PlannerAgent
+    # ── PlannerAgent — SK semantic function ──────────────────────────────────
+    # kernel.invoke renders the {{$user_task}} prompt template and dispatches
+    # to Groq. The plan is dynamic: different queries produce different plans.
     agents_invoked.append("PlannerAgent")
-    subtasks = await plan_task(req.query)
+    plan_result = await kernel.invoke(
+        plugin_name="Planner",
+        function_name="decompose",
+        arguments=KernelArguments(user_task=req.query),
+    )
+    subtasks = _parse_subtasks(str(plan_result), req.query)
+    log.info("planner.subtasks", count=len(subtasks), subtasks=subtasks)
 
-    all_claims = []
-    all_kpis = []
-    subtask_results = []
+    all_claims: list[dict] = []
+    subtask_results: list[dict] = []
     retrievals: dict[str, list[str]] = {}
 
     for subtask in subtasks:
-        # RetrieverAgent
+        # ── RetrieverAgent — SK native plugin ────────────────────────────────
+        # KernelArguments carries the subtask string into the plugin function.
         agents_invoked.append("RetrieverAgent")
-        ranked_chunks = await retrieve_chunks(subtask)
+        retrieve_result = await kernel.invoke(
+            plugin_name="Retriever",
+            function_name="retrieve",
+            arguments=KernelArguments(subtask=subtask),
+        )
+        chunks_json = str(retrieve_result)
 
-        if not ranked_chunks:
+        try:
+            chunks_data = json.loads(chunks_json)
+        except json.JSONDecodeError:
+            chunks_data = []
+
+        if not chunks_data:
             continue
 
-        retrievals[subtask] = [r.chunk.chunk_id for r in ranked_chunks]
-        chunks_data = [
-            {
-                "text": r.chunk.text,
-                "source": r.chunk.source,
-                "page": r.chunk.page,
-                "section_type": r.chunk.section_type.value,
-                "confidence": r.confidence_score,
-                "company": r.chunk.company,
-                "fiscal_year": r.chunk.fiscal_year,
-            }
-            for r in ranked_chunks
-        ]
+        retrievals[subtask] = [c.get("chunk_id", "") for c in chunks_data]
 
-        # AnalystAgent
+        # ── AnalystAgent — SK native plugin ──────────────────────────────────
+        # chunks_json threads forward as a KernelArgument — citations are
+        # embedded in the JSON string and survive the hop intact.
         agents_invoked.append("AnalystAgent")
-        analysis = await analyze_chunks(subtask, chunks_data)
-        kpis = analysis.get("kpis", [])
+        analysis_result = await kernel.invoke(
+            plugin_name="Analyst",
+            function_name="analyze",
+            arguments=KernelArguments(subtask=subtask, chunks_json=chunks_json),
+        )
+
+        try:
+            analysis = json.loads(str(analysis_result))
+        except json.JSONDecodeError:
+            analysis = {"kpis": [], "claims": []}
+
         claims = analysis.get("claims", [])
-
-        all_kpis.extend(kpis)
         all_claims.extend(claims)
-        subtask_results.append({"subtask": subtask, "kpis": kpis, "claims": claims})
+        subtask_results.append(
+            {"subtask": subtask, "kpis": analysis.get("kpis", []), "claims": claims}
+        )
 
-    # AuditorAgent
+    # ── AuditorAgent — SK native plugin ──────────────────────────────────────
+    # Structural entailment pass: every claim is checked before synthesis.
+    # kernel.invoke() passes the full claims list as a single JSON argument.
     agents_invoked.append("AuditorAgent")
     threshold = req.confidence_threshold or settings.confidence_threshold
-    verified, uncertain, unverifiable = await audit_claims(all_claims, {}, threshold)
+    audit_result = await kernel.invoke(
+        plugin_name="Auditor",
+        function_name="audit",
+        arguments=KernelArguments(
+            claims_json=json.dumps(all_claims),
+            confidence_threshold=str(threshold),
+        ),
+    )
 
-    # ComparatorAgent
+    verified, uncertain, unverifiable_claims = _parse_audit_result(str(audit_result))
+
+    # ── ComparatorAgent — SK native plugin ───────────────────────────────────
+    # Cross-document synthesis with multi-source citations.
     agents_invoked.append("ComparatorAgent")
-    comparison = await compare_results(subtask_results, req.query)
+    compare_result = await kernel.invoke(
+        plugin_name="Comparator",
+        function_name="compare",
+        arguments=KernelArguments(
+            subtask_results_json=json.dumps(subtask_results),
+            original_query=req.query,
+        ),
+    )
 
-    # SynthesizerAgent
+    try:
+        comparison = json.loads(str(compare_result))
+    except json.JSONDecodeError:
+        comparison = {"deltas": [], "cross_document_claims": [], "summary": ""}
+
+    # ── SynthesizerAgent — SK semantic function ───────────────────────────────
+    # Assembles the final report from verified + uncertain claims only.
+    # Internally calls kernel.invoke("Synthesizer", "synthesize", KernelArguments(...)).
     agents_invoked.append("SynthesizerAgent")
     summary = await synthesize_report(req.query, verified, uncertain, comparison, task_id)
 
@@ -104,11 +147,10 @@ async def run_query(req: QueryRequest):
         retrievals=retrievals,
         claims=[c.to_dict() for c in verified + uncertain],
         flagged_uncertain=[c.claim for c in uncertain],
-        blocked_unverifiable=[c.claim for c in unverifiable],
+        blocked_unverifiable=unverifiable_claims,
         agents_invoked=list(dict.fromkeys(agents_invoked)),
         latency_ms=latency_ms,
     )
-
     _save_audit_log(audit_log)
 
     report = AnalysisReport(
@@ -125,10 +167,63 @@ async def run_query(req: QueryRequest):
         task_id=task_id,
         verified=len(verified),
         uncertain=len(uncertain),
-        blocked=len(unverifiable),
+        blocked=len(unverifiable_claims),
         latency_ms=latency_ms,
     )
     return report.to_dict()
+
+
+def _parse_subtasks(content: str, fallback: str) -> list[str]:
+
+    try:
+        subtasks = json.loads(content)
+        if isinstance(subtasks, list) and all(isinstance(s, str) for s in subtasks):
+            return subtasks
+    except (json.JSONDecodeError, ValueError):
+        pass
+    lines = [ln.strip().lstrip("-•1234567890.) ") for ln in content.splitlines() if ln.strip()]
+    subtasks = [ln for ln in lines if len(ln) > 10][:6]
+    return subtasks if subtasks else [fallback]
+
+
+def _parse_audit_result(
+    audit_json: str,
+) -> tuple[list[AuditedClaim], list[AuditedClaim], list[str]]:
+    try:
+        data = json.loads(audit_json)
+    except json.JSONDecodeError:
+        return [], [], []
+
+    verified = _deserialize_claims(data.get("verified", []))
+    uncertain = _deserialize_claims(data.get("uncertain", []))
+    unverifiable = data.get("unverifiable", [])
+    return verified, uncertain, unverifiable
+
+
+def _deserialize_claims(raw: list[dict]) -> list[AuditedClaim]:
+    result = []
+    for item in raw:
+        try:
+            cit = item.get("citation", {})
+            citation = Citation(
+                document=cit.get("document", "unknown"),
+                page=cit.get("page", 0),
+                snippet=cit.get("snippet", ""),
+                claim=cit.get("claim", ""),
+                confidence=float(cit.get("confidence", 0.5)),
+                section_type=cit.get("section_type", "unknown"),
+            )
+            result.append(
+                AuditedClaim(
+                    claim=item.get("claim", ""),
+                    citation=citation,
+                    audit_status=AuditStatus(item.get("audit_status", "uncertain")),
+                    audit_reason=item.get("audit_reason", ""),
+                )
+            )
+        except (KeyError, ValueError):
+            continue
+    return result
 
 
 def _save_audit_log(audit_log: AuditLog) -> None:

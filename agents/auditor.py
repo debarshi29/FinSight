@@ -4,12 +4,47 @@ import json
 from typing import Any
 
 import structlog
+from semantic_kernel.functions import kernel_function
 
 from core.config import settings
 from core.groq_client import chat_completion
 from core.models import AuditedClaim, AuditStatus, Citation
 
 log = structlog.get_logger()
+
+
+class AuditorPlugin:
+    """
+    SK native plugin — structural entailment verification pass.
+
+    Registered to the kernel so the SK planner can include it in generated
+    plans. Wraps audit_claims as a single kernel_function that accepts and
+    returns JSON strings, keeping citation objects alive across the hop.
+    """
+
+    @kernel_function(
+        name="audit",
+        description=(
+            "Verify every claim against its supporting snippet. "
+            "Returns JSON with verified, uncertain, and unverifiable claim lists."
+        ),
+    )
+    async def audit(self, claims_json: str, confidence_threshold: str = "0.65") -> str:
+        try:
+            claims = json.loads(claims_json)
+        except json.JSONDecodeError:
+            return json.dumps({"verified": [], "uncertain": [], "unverifiable": []})
+
+        threshold = float(confidence_threshold)
+        verified, uncertain, unverifiable = await audit_claims(claims, {}, threshold)
+        return json.dumps(
+            {
+                "verified": [c.to_dict() for c in verified],
+                "uncertain": [c.to_dict() for c in uncertain],
+                "unverifiable": [c.claim for c in unverifiable],
+            }
+        )
+
 
 _SYSTEM = """You are a compliance auditor. For each claim, determine whether the provided snippet ENTAILS the claim.
 

@@ -5,10 +5,38 @@ import re
 from typing import Any
 
 import structlog
+from semantic_kernel.functions import kernel_function
 
 from core.groq_client import chat_completion
 
 log = structlog.get_logger()
+
+
+class ComparatorPlugin:
+    """
+    SK native plugin — cross-document synthesis and anomaly detection.
+
+    Registered to the kernel so the SK planner can wire it after the
+    per-subtask Analyst calls. Accepts serialised subtask results and
+    returns a JSON delta/anomaly report with multi-source citations.
+    """
+
+    @kernel_function(
+        name="compare",
+        description=(
+            "Synthesise results across multiple subtasks. "
+            "Returns JSON with deltas, anomalies, and cross-document claims."
+        ),
+    )
+    async def compare(self, subtask_results_json: str, original_query: str) -> str:
+        try:
+            subtask_results = json.loads(subtask_results_json)
+        except json.JSONDecodeError:
+            subtask_results = []
+
+        result = await compare_results(subtask_results, original_query)
+        return json.dumps(result)
+
 
 _SYSTEM = """You are a cross-document financial analyst. You receive analysis results from multiple subtasks and must synthesize them into a comparative view.
 

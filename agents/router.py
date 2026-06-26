@@ -3,40 +3,34 @@ from __future__ import annotations
 import json
 
 import structlog
+from semantic_kernel import KernelArguments
 
-from core.groq_client import chat_completion
+from core.sk_kernel import get_kernel
 
 log = structlog.get_logger()
 
-_SYSTEM = (
-    "You are a financial analysis planning agent. Given a user analysis task, "
-    "decompose it into an ordered list of 2-6 specific retrieval subtasks. "
-    "Each subtask must be a precise, searchable query targeting a specific "
-    "financial metric, time period, or company.\n\n"
-    "Output ONLY valid JSON — a list of strings. No markdown, no explanation.\n\n"
-    "Example:\n"
-    'Input: "Compare Infosys and TCS operating margins FY2022-2024"\n'
-    'Output: ["Infosys operating margin FY2022", "Infosys operating margin FY2023", '
-    '"Infosys operating margin FY2024", "TCS operating margin FY2022", '
-    '"TCS operating margin FY2023", "TCS operating margin FY2024"]'
-)
-
 
 async def plan_task(user_task: str) -> list[str]:
-    """PlannerAgent: decompose a user task into ordered subtasks using Groq."""
+    """
+    PlannerAgent: invokes the Planner.decompose semantic function via the SK
+    kernel. The kernel renders the {{$user_task}} prompt template, dispatches
+    to Groq, and returns the result — no raw chat_completion call here.
+
+    This is load-bearing SK: the plan changes dynamically with every query
+    because the LLM generates it, not a hardcoded graph topology.
+    """
+    kernel = get_kernel()
     log.info("planner.start", task=user_task[:100])
 
-    content = await chat_completion(
-        messages=[
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": user_task},
-        ],
-        temperature=0.0,
-        max_tokens=512,
+    result = await kernel.invoke(
+        plugin_name="Planner",
+        function_name="decompose",
+        arguments=KernelArguments(user_task=user_task),
     )
+    content = str(result).strip()
 
     try:
-        subtasks = json.loads(content.strip())
+        subtasks = json.loads(content)
         if isinstance(subtasks, list) and all(isinstance(s, str) for s in subtasks):
             log.info("planner.complete", subtasks=len(subtasks))
             return subtasks
