@@ -5,6 +5,16 @@ build/
 dist/
 wheels/
 *.egg-info
-qdrant_storage/
+
 # Virtual environments
 .venv
+
+# Storage and secrets
+qdrant_storage/
+.env
+audit_logs/
+data/filings/
+
+# Cache
+.ruff_cache/
+.pytest_cache/

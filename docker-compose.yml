@@ -1,10 +1,35 @@
 services:
   qdrant:
-    image: qdrant/qdrant
-    container_name: qdrant
+    image: qdrant/qdrant:latest
+    container_name: finsight_qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
     volumes:
       - ./qdrant_storage:/qdrant/storage
-      
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: finsight_api
+    ports:
+      - "8000:8000"
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+    env_file:
+      - .env
+    volumes:
+      - ./audit_logs:/app/audit_logs
+      - ./data:/app/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
