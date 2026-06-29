@@ -6,798 +6,1036 @@
 <meta name="description" content="Regulatory-grade financial intelligence. Every claim traced to a verbatim source.">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* ══ TOKENS — EY × absolute black ════════════════════════════════ */
+:root {
+  /* Ground — OLED black */
+  --bg:       #000000;
+  --surface:  #0D0D0D;
+  --raised:   #111111;
+  --card:     #181818;
 
-  :root {
-    --bg:            #0c1117;
-    --surface:       #161c24;
-    --surface-high:  #1e2733;
-    --border:        #263040;
-    --border-subtle: #1c2432;
-    --text:          #e2eaf4;
-    --text-2:        #8a99ac;
-    --text-3:        #516070;
-    --accent:        #1a6fd4;
-    --accent-dim:    #122c50;
-    --verified:      #2da44e;
-    --verified-bg:   #0d2818;
-    --verified-dim:  #16a34a33;
-    --uncertain:     #c9891a;
-    --uncertain-bg:  #2a1d07;
-    --uncertain-dim: #ca8a0433;
-    --blocked:       #c0392b;
-    --blocked-bg:    #2a0d0a;
-    --mono:          'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-    --sans:          -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  }
+  /* Borders — pure neutral, zero hue */
+  --rim:      #222222;
+  --rim-2:    #333333;
+  --rim-3:    #555555;
 
-  html { font-size: 14px; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.6;
-    min-height: 100vh;
-    padding-bottom: 80px;
-  }
+  /* Text */
+  --ink:      #FFFFFF;
+  --ink-2:    #AAAAAA;
+  --ink-3:    #555555;
 
-  /* ── Header ─────────────────────────────────────────── */
-  header {
-    border-bottom: 1px solid var(--border-subtle);
-    padding: 16px 24px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .logo {
-    font-family: var(--mono);
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text);
-    letter-spacing: 0.04em;
-  }
-  .logo span { color: var(--accent); }
-  .header-meta {
-    font-size: 11px;
-    color: var(--text-3);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    margin-left: auto;
-  }
+  /* EY yellow — interaction & structure only, never data */
+  --ey:       #FFE600;
+  --ey-dk:    #1A1A24;          /* text on yellow */
+  --ey-dim:   rgba(255,230,0,0.08);
+  --ey-mid:   rgba(255,230,0,0.16);
+  --ey-glow:  rgba(255,230,0,0.28);
 
-  /* ── Main layout ─────────────────────────────────────── */
-  main {
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 32px 24px;
-  }
+  /* Semantic — functional, independent of brand accent */
+  --pass:     #21A366;
+  --pass-hi:  #2ECC87;
+  --pass-dim: rgba(33,163,102,0.10);
+  --warn:     #D4750A;
+  --warn-hi:  #F08C20;
+  --warn-dim: rgba(212,117,10,0.10);
+  --fail:     #D64045;
+  --fail-hi:  #E86368;
+  --fail-dim: rgba(214,64,69,0.10);
 
-  /* ── Query panel ─────────────────────────────────────── */
-  .query-panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 20px;
-    margin-bottom: 24px;
-  }
-  .query-label {
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-3);
-    margin-bottom: 10px;
-  }
-  .query-row {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-  textarea {
-    flex: 1;
-    min-width: 0;
-    min-height: 72px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-family: var(--sans);
-    font-size: 14px;
-    line-height: 1.5;
-    padding: 10px 12px;
-    resize: vertical;
-    outline: none;
-    transition: border-color 0.15s;
-  }
-  textarea:focus { border-color: var(--accent); }
-  textarea::placeholder { color: var(--text-3); }
+  /* Geometry — EY is sharp */
+  --r:    2px;
+  --r-lg: 4px;
 
-  .filters {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-top: 10px;
-  }
-  input[type="text"] {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-family: var(--mono);
-    font-size: 12px;
-    padding: 7px 10px;
-    outline: none;
-    width: 160px;
-    transition: border-color 0.15s;
-  }
-  input[type="text"]:focus { border-color: var(--accent); }
-  input[type="text"]::placeholder { color: var(--text-3); font-family: var(--sans); }
+  /* Type */
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
 
-  button#run-btn {
-    background: var(--accent);
-    border: none;
-    border-radius: 6px;
-    color: #fff;
-    cursor: pointer;
-    font-family: var(--sans);
-    font-size: 13px;
-    font-weight: 600;
-    padding: 10px 20px;
-    white-space: nowrap;
-    transition: background 0.15s, opacity 0.15s;
-    align-self: flex-start;
-    margin-top: 10px;
-  }
-  button#run-btn:hover { background: #1a5cb5; }
-  button#run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  /* Layout */
+  --sb:  288px;
+  --hdr: 52px;
+}
 
-  /* ── Progress feed ───────────────────────────────────── */
-  #progress {
-    display: none;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px 20px;
-    margin-bottom: 24px;
-  }
-  #progress.visible { display: block; }
-  .progress-title {
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-3);
-    margin-bottom: 12px;
-  }
-  .events {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-family: var(--mono);
-    font-size: 12px;
-    max-height: 280px;
-    overflow-y: auto;
-  }
-  .ev {
-    display: flex;
-    gap: 12px;
-    align-items: baseline;
-    padding: 5px 8px;
-    border-radius: 4px;
-    animation: fadein 0.2s ease;
-  }
-  @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  .ev-ts { color: var(--text-3); flex-shrink: 0; min-width: 56px; font-variant-numeric: tabular-nums; }
-  .ev-tag {
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    padding: 1px 6px;
-    border-radius: 3px;
-    flex-shrink: 0;
-    font-weight: 600;
-  }
-  .ev-tag.start    { background: var(--accent-dim); color: var(--accent); }
-  .ev-tag.planned  { background: #1e2c1e; color: #4ade80; }
-  .ev-tag.retrieved{ background: #1c2630; color: #60a5fa; }
-  .ev-tag.analyzed { background: #251e2c; color: #c084fc; }
-  .ev-tag.audited  { background: #221e14; color: var(--uncertain); }
-  .ev-tag.compared { background: #1e2530; color: #94a3b8; }
-  .ev-tag.done     { background: var(--verified-bg); color: var(--verified); }
-  .ev-tag.error    { background: var(--blocked-bg); color: var(--blocked); }
-  .ev-msg { color: var(--text-2); flex: 1; }
+/* ══ RESET ════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  height: 100%;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
 
-  /* ── Results ─────────────────────────────────────────── */
-  #results { display: none; }
-  #results.visible { display: block; }
+/* ══ SHELL ════════════════════════════════════════════════════════ */
+.shell { display: grid; grid-template-rows: var(--hdr) 1fr; height: 100vh; }
 
-  .result-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-  }
-  .result-header h2 {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text);
-  }
-  .pill {
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-weight: 600;
-    font-family: var(--mono);
-  }
-  .pill.verified  { background: var(--verified-bg);  color: var(--verified); border: 1px solid #2da44e44; }
-  .pill.uncertain { background: var(--uncertain-bg); color: var(--uncertain); border: 1px solid #c9891a44; }
-  .pill.blocked   { background: var(--blocked-bg);   color: var(--blocked);   border: 1px solid #c0392b44; }
-  .latency {
-    margin-left: auto;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-3);
-  }
+/* ══ HEADER ═══════════════════════════════════════════════════════ */
+header {
+  display: flex; align-items: center;
+  padding: 0 20px; gap: 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--rim);
+  position: relative; z-index: 20;
+}
 
-  /* ── Summary card ────────────────────────────────────── */
-  .summary-card {
-    background: var(--surface);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    padding: 20px 24px;
-    margin-bottom: 20px;
-  }
-  .summary-card h3 {
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--text-3);
-    margin-bottom: 14px;
-  }
-  .summary-body {
-    font-size: 14px;
-    line-height: 1.7;
-    color: var(--text-2);
-    white-space: pre-wrap;
-  }
+/* The yellow bar under the header is the EY brand signal */
+header::after {
+  content: '';
+  position: absolute; bottom: -3px; left: 0; right: 0;
+  height: 3px;
+  background: var(--ey);
+  z-index: 1;
+}
 
-  /* ── Plan tags ───────────────────────────────────────── */
-  .plan-card {
-    background: var(--surface);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    padding: 16px 20px;
-    margin-bottom: 20px;
-  }
-  .plan-card h3 {
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--text-3);
-    margin-bottom: 12px;
-  }
-  .plan-subtasks {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .subtask-tag {
-    font-family: var(--mono);
-    font-size: 11px;
-    background: var(--accent-dim);
-    color: #7db8f5;
-    border-radius: 4px;
-    padding: 3px 8px;
-    border: 1px solid #1a6fd422;
-  }
+.logo { display: flex; align-items: center; gap: 12px; }
+.logo-badge {
+  width: 30px; height: 30px; border-radius: var(--r);
+  background: var(--ey);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  font-family: var(--mono); font-size: 10px; font-weight: 800;
+  color: var(--ey-dk); letter-spacing: 0.02em;
+}
+.logo-name {
+  font-family: var(--sans); font-size: 15px; font-weight: 700;
+  color: var(--ink); letter-spacing: -0.01em;
+}
+.logo-name span { color: var(--ey); }
+.hdr-sep { width: 1px; height: 18px; background: var(--rim); flex-shrink: 0; }
+.hdr-sub {
+  font-size: 11px; color: var(--ink-3);
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.hdr-end { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--pass);
+  box-shadow: 0 0 0 2px rgba(33,163,102,0.18), 0 0 7px var(--pass-dim);
+  animation: idle-dot 3s ease-in-out infinite;
+}
+.status-dot.live {
+  background: var(--ey);
+  box-shadow: 0 0 0 2px var(--ey-dim), 0 0 10px var(--ey-glow);
+  animation: live-dot 0.7s ease-in-out infinite;
+}
+@keyframes idle-dot  { 0%,100%{opacity:1} 50%{opacity:0.3} }
+@keyframes live-dot  { 0%,100%{transform:scale(1)} 50%{transform:scale(1.5);opacity:0.6} }
+.status-txt { font-size: 12px; font-family: var(--mono); color: var(--ink-3); letter-spacing: 0.04em; }
 
-  /* ── Claim sections ──────────────────────────────────── */
-  .section-label {
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--text-3);
-    margin-bottom: 12px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .section-label::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: var(--border-subtle);
-  }
+/* ══ WORKSPACE ════════════════════════════════════════════════════ */
+.workspace { display: grid; grid-template-columns: var(--sb) 1fr; overflow: hidden; height: 100%; }
 
-  .claims-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    margin-bottom: 24px;
-  }
+/* ══ SIDEBAR ══════════════════════════════════════════════════════ */
+.sidebar {
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--rim);
+  overflow: hidden;
+}
+.sb-block { padding: 16px; border-bottom: 1px solid var(--rim); flex-shrink: 0; }
+.sb-block.fill { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 
-  .claim-card {
-    border-radius: 7px;
-    border-left: 3px solid transparent;
-    background: var(--surface);
-    border: 1px solid var(--border-subtle);
-    overflow: hidden;
-  }
-  .claim-card.verified  { border-left-color: var(--verified); }
-  .claim-card.uncertain { border-left-color: var(--uncertain); }
+.blk-label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.10em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 10px;
+}
+.blk-label::before {
+  content: ''; display: block;
+  width: 3px; height: 11px; border-radius: 0;
+  background: var(--ey); flex-shrink: 0;
+}
 
-  .claim-top {
-    padding: 14px 16px 10px;
-  }
-  .claim-text {
-    font-size: 14px;
-    color: var(--text);
-    line-height: 1.55;
-    margin-bottom: 10px;
-  }
-  .claim-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-  }
-  .meta-tag {
-    font-family: var(--mono);
-    font-size: 10px;
-    padding: 2px 7px;
-    border-radius: 3px;
-    background: var(--surface-high);
-    color: var(--text-2);
-    border: 1px solid var(--border-subtle);
-    white-space: nowrap;
-  }
-  .meta-tag.section-af  { background: #0d2818; color: #5cb876; border-color: #2da44e22; }
-  .meta-tag.section-mda { background: #122030; color: #60a5fa; border-color: #1a6fd422; }
-  .meta-tag.section-notes { background: #1e1e30; color: #a78bfa; border-color: #7c3aed22; }
-  .meta-tag.section-letter { background: #221e14; color: #f59e0b; border-color: #b45a0022; }
+textarea {
+  width: 100%; min-height: 92px;
+  background: var(--bg); border: 1px solid var(--rim);
+  border-radius: var(--r); color: var(--ink);
+  font-family: var(--sans); font-size: 13px; line-height: 1.6;
+  padding: 10px 12px; resize: vertical; outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+textarea:focus {
+  border-color: var(--ey);
+  box-shadow: 0 0 0 3px var(--ey-dim);
+}
+textarea::placeholder { color: var(--ink-3); }
 
-  .confidence-wrap {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-left: auto;
-  }
-  .conf-bar-track {
-    width: 80px;
-    height: 4px;
-    background: var(--surface-high);
-    border-radius: 2px;
-    overflow: hidden;
-  }
-  .conf-bar-fill {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.4s ease;
-  }
-  .conf-val {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-3);
-    font-variant-numeric: tabular-nums;
-    min-width: 36px;
-    text-align: right;
-  }
+.filter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 9px; }
+.fld { display: flex; flex-direction: column; gap: 4px; }
+.fld-lbl {
+  font-size: 10px; font-weight: 700; color: var(--ink-3);
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.fld input {
+  background: var(--bg); border: 1px solid var(--rim); border-radius: var(--r);
+  color: var(--ink); font-family: var(--mono); font-size: 12px;
+  padding: 6px 9px; outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+}
+.fld input:focus { border-color: var(--ey); box-shadow: 0 0 0 2px var(--ey-dim); }
+.fld input::placeholder { color: var(--ink-3); }
 
-  .claim-snippet {
-    padding: 10px 16px 14px;
-    border-top: 1px solid var(--border-subtle);
-    background: var(--bg);
-  }
-  .snippet-src {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--text-3);
-    margin-bottom: 6px;
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .snippet-text {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--text-2);
-    line-height: 1.6;
-    border-left: 2px solid var(--border);
-    padding-left: 10px;
-  }
-  .reason-text {
-    font-size: 11px;
-    color: var(--text-3);
-    margin-top: 6px;
-    padding-left: 12px;
-    font-style: italic;
-  }
+/* ── Run button — yellow on dark, EY CTA pattern ─── */
+.run-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; margin-top: 10px; padding: 10px 16px;
+  background: var(--ey);
+  border: none; border-radius: var(--r);
+  color: var(--ey-dk); cursor: pointer;
+  font-family: var(--sans); font-size: 13px; font-weight: 800;
+  letter-spacing: 0.02em; text-transform: uppercase;
+  box-shadow: 0 1px 4px rgba(255,230,0,0.22);
+  transition: filter 0.12s, box-shadow 0.12s, transform 0.1s;
+  position: relative; overflow: hidden;
+}
+.run-btn::after {
+  content: '';
+  position: absolute; top: 0; left: -80%; width: 50%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent);
+  transform: skewX(-20deg);
+  transition: left 0.45s ease;
+  pointer-events: none;
+}
+.run-btn:hover:not(:disabled)::after { left: 140%; }
+.run-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow: 0 3px 14px rgba(255,230,0,0.32);
+  transform: translateY(-1px);
+}
+.run-btn:active:not(:disabled) { transform: translateY(0); }
+.run-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+.run-btn:focus-visible { outline: 2px solid var(--ey); outline-offset: 3px; }
+.spin {
+  display: none; width: 13px; height: 13px;
+  border: 2px solid rgba(26,26,36,0.25); border-top-color: var(--ey-dk);
+  border-radius: 50%; animation: rot 0.5s linear infinite;
+}
+.run-btn.busy .spin { display: block; }
+@keyframes rot { to { transform: rotate(360deg); } }
 
-  /* ── Blocked section ─────────────────────────────────── */
-  .blocked-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-bottom: 24px;
-  }
-  .blocked-item {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: #e07070;
-    background: var(--blocked-bg);
-    border: 1px solid #c0392b22;
-    border-radius: 5px;
-    padding: 8px 12px;
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-  }
-  .blocked-icon { color: #c0392b; flex-shrink: 0; }
+/* ── Presets ──────────────────────────────────────── */
+.presets { display: flex; flex-direction: column; gap: 4px; }
+.preset {
+  background: transparent; border: 1px solid var(--rim); border-radius: var(--r);
+  color: var(--ink-3); cursor: pointer;
+  font-family: var(--sans); font-size: 12px; line-height: 1.5;
+  padding: 8px 11px; text-align: left;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.preset:hover {
+  border-color: var(--ey); color: var(--ink); background: var(--ey-dim);
+}
+.preset:focus-visible { outline: 1px solid var(--ey); }
 
-  /* ── Error state ─────────────────────────────────────── */
-  .error-banner {
-    background: var(--blocked-bg);
-    border: 1px solid #c0392b44;
-    border-radius: 8px;
-    padding: 16px 20px;
-    color: #e07070;
-    font-size: 13px;
-    margin-bottom: 20px;
-    display: none;
-  }
-  .error-banner.visible { display: block; }
+/* ── Event log ────────────────────────────────────── */
+.log-wrap { flex: 1; overflow-y: auto; min-height: 0; }
+.log-wrap::-webkit-scrollbar { width: 3px; }
+.log-wrap::-webkit-scrollbar-thumb { background: var(--rim); border-radius: 0; }
+.log { display: flex; flex-direction: column; gap: 1px; }
+.log-row {
+  display: grid; grid-template-columns: 52px 64px 1fr;
+  gap: 6px; align-items: start;
+  padding: 3px 2px; border-radius: var(--r);
+  animation: log-in 0.12s ease;
+}
+@keyframes log-in { from{opacity:0;transform:translateX(-4px)} to{opacity:1;transform:none} }
+.log-ts  { font-family: var(--mono); font-size: 10px; color: var(--ink-3); font-variant-numeric: tabular-nums; line-height: 1.6; }
+.log-tag {
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 2px 5px; border-radius: var(--r); text-align: center; line-height: 1.5;
+}
+.log-tag.start     { background: var(--ey-dim);                    color: var(--ey); }
+.log-tag.planned   { background: rgba(132,128,240,0.10);            color: #9b97f0; }
+.log-tag.retrieved { background: rgba(56,189,248,0.08);             color: #60caed; }
+.log-tag.analyzed  { background: rgba(167,139,250,0.10);            color: #b39cf0; }
+.log-tag.audited   { background: var(--warn-dim);                   color: var(--warn-hi); }
+.log-tag.compared  { background: rgba(148,163,184,0.10);            color: #94a3b8; }
+.log-tag.done      { background: var(--pass-dim);                   color: var(--pass-hi); }
+.log-tag.error     { background: var(--fail-dim);                   color: var(--fail-hi); }
+.log-msg { font-family: var(--mono); font-size: 10.5px; color: var(--ink-2); line-height: 1.5; word-break: break-word; }
 
-  /* ── Empty state ─────────────────────────────────────── */
-  .empty-state {
-    text-align: center;
-    padding: 60px 20px;
-    color: var(--text-3);
-  }
-  .empty-state p { font-size: 13px; margin-top: 8px; }
-  .empty-qs {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    max-width: 580px;
-    margin: 28px auto 0;
-    text-align: left;
-  }
-  .qs-btn {
-    background: var(--surface);
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
-    color: var(--text-2);
-    cursor: pointer;
-    font-family: var(--sans);
-    font-size: 12px;
-    padding: 10px 14px;
-    text-align: left;
-    transition: border-color 0.15s, background 0.15s;
-  }
-  .qs-btn:hover { border-color: var(--accent); background: var(--surface-high); }
+/* ══ MAIN ═════════════════════════════════════════════════════════ */
+.main { display: flex; flex-direction: column; overflow: hidden; }
 
-  /* ── Scrollbar ───────────────────────────────────────── */
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+/* ══ PIPELINE ═════════════════════════════════════════════════════ */
+.pipe-bar {
+  padding: 14px 24px 16px;
+  background: var(--surface); border-bottom: 1px solid var(--rim);
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+.pipe-bar-lbl {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.10em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 14px;
+  display: flex; align-items: center; gap: 10px;
+}
+.pipe-bar-lbl::after { content: ''; flex: 1; height: 1px; background: var(--rim); }
 
-  @media (max-width: 600px) {
-    main { padding: 20px 16px; }
-    .query-row { flex-direction: column; }
-    button#run-btn { width: 100%; margin-top: 0; }
-  }
+.pipe { display: flex; align-items: center; overflow-x: auto; padding-bottom: 2px; }
+.pipe::-webkit-scrollbar { height: 3px; }
+.pipe::-webkit-scrollbar-thumb { background: var(--rim); }
+
+/* Pipeline node — sharp, EY-like */
+.pn {
+  flex-shrink: 0; position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 11px 18px 9px;
+  background: var(--raised);
+  border: 1px solid var(--rim); border-radius: var(--r);
+  min-width: 82px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.22);
+  transition: border-color 0.3s, background 0.3s, box-shadow 0.3s;
+}
+/* EY yellow active state */
+.pn[data-state="running"] {
+  border-color: var(--ey); background: var(--ey-dim);
+  box-shadow: 0 0 0 1px var(--ey-dim), 0 0 18px var(--ey-glow);
+  animation: pn-pulse 1.5s ease-in-out infinite;
+}
+.pn[data-state="done"] {
+  border-color: var(--pass); background: var(--pass-dim);
+  box-shadow: 0 0 0 1px var(--pass-dim);
+}
+.pn[data-state="error"] {
+  border-color: var(--fail); background: var(--fail-dim);
+}
+@keyframes pn-pulse {
+  0%,100% { box-shadow: 0 0 0 1px var(--ey-dim), 0 0 10px var(--ey-glow); }
+  50%     { box-shadow: 0 0 0 1px var(--ey-mid), 0 0 22px var(--ey-glow); }
+}
+
+.pn-id {
+  font-family: var(--mono); font-size: 13px; font-weight: 700;
+  color: var(--rim-3); letter-spacing: 0.06em; transition: color 0.3s;
+}
+.pn[data-state="running"] .pn-id { color: var(--ey); }
+.pn[data-state="done"]    .pn-id { color: var(--pass-hi); }
+.pn[data-state="error"]   .pn-id { color: var(--fail-hi); }
+
+.pn-name {
+  font-size: 10px; color: var(--ink-3); letter-spacing: 0.02em;
+  transition: color 0.3s; white-space: nowrap;
+}
+.pn[data-state="running"] .pn-name { color: var(--ey); }
+.pn[data-state="done"]    .pn-name { color: var(--pass); }
+.pn[data-state="error"]   .pn-name { color: var(--fail); }
+
+.pn-badge {
+  position: absolute; top: -8px; right: -8px;
+  min-width: 20px; height: 20px; padding: 0 4px;
+  background: var(--ey); border: 2px solid var(--surface);
+  border-radius: 10px;
+  font-family: var(--mono); font-size: 10px; font-weight: 800;
+  color: var(--ey-dk);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transform: scale(0.5);
+  transition: opacity 0.2s, transform 0.2s;
+}
+.pn-badge.on { opacity: 1; transform: scale(1); }
+.pn[data-state="done"] .pn-badge { background: var(--pass); color: #fff; }
+
+/* Connector */
+.pc {
+  flex: 1; min-width: 16px; max-width: 40px;
+  height: 2px; background: var(--rim); align-self: center;
+  transition: background 0.4s;
+  position: relative; overflow: hidden;
+}
+.pc::after {
+  content: '';
+  position: absolute; top: 0; bottom: 0; left: -100%; width: 100%;
+  background: linear-gradient(90deg, transparent, var(--ey) 50%, transparent);
+  opacity: 0; transition: opacity 0.3s;
+}
+.pc.active { background: rgba(255,230,0,0.20); }
+.pc.active::after { opacity: 1; animation: sweep 0.85s linear infinite; }
+.pc.done { background: var(--pass); }
+.pc.done::after { display: none; }
+@keyframes sweep { from{left:-100%} to{left:100%} }
+
+/* ══ OUTPUT ═══════════════════════════════════════════════════════ */
+.out {
+  flex: 1; overflow-y: auto; padding: 24px;
+  background: var(--bg);
+}
+.out::-webkit-scrollbar { width: 5px; }
+.out::-webkit-scrollbar-track { background: transparent; }
+.out::-webkit-scrollbar-thumb { background: var(--rim); border-radius: 0; }
+.out::-webkit-scrollbar-thumb:hover { background: var(--rim-2); }
+
+/* ══ EMPTY STATE ══════════════════════════════════════════════════ */
+.empty {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; height: 100%; gap: 10px; text-align: center;
+}
+.empty-gfx {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 10px; opacity: 0.28;
+}
+.empty-node {
+  width: 46px; height: 46px; border: 1px solid var(--rim-2);
+  border-radius: var(--r);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+}
+.empty-node-id { font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--ink-3); }
+.empty-node-nm { font-size: 7px; color: var(--ink-3); letter-spacing: 0.03em; }
+.empty-wire { width: 18px; height: 1px; background: var(--rim-2); }
+.empty h3 { font-size: 15px; font-weight: 600; color: var(--ink-2); }
+.empty p  { font-size: 13px; color: var(--ink-3); max-width: 340px; line-height: 1.7; }
+.empty-hint {
+  font-size: 11px; font-family: var(--mono);
+  color: var(--ink-3); margin-top: 6px;
+  background: var(--raised); border: 1px solid var(--rim);
+  border-radius: var(--r); padding: 4px 12px;
+}
+
+/* ══ ERROR ════════════════════════════════════════════════════════ */
+.err {
+  background: var(--fail-dim); border: 1px solid rgba(214,64,69,0.22);
+  border-left: 3px solid var(--fail); border-radius: var(--r);
+  padding: 12px 16px; color: var(--fail-hi); font-size: 13px;
+  margin-bottom: 18px; display: none;
+}
+.err.on { display: block; }
+
+/* ══ STATS ════════════════════════════════════════════════════════ */
+.stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 18px; }
+.stat {
+  background: var(--surface); border: 1px solid var(--rim);
+  border-radius: var(--r); padding: 18px 20px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.22);
+  transition: box-shadow 0.18s, transform 0.18s;
+}
+.stat:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.32); }
+/* Top accent bar — 3px color stripe, EY-style */
+.stat.v { border-top: 3px solid var(--pass); }
+.stat.u { border-top: 3px solid var(--warn); }
+.stat.b { border-top: 3px solid var(--fail); }
+
+.stat-num {
+  font-family: var(--mono); font-size: 36px; font-weight: 700;
+  font-variant-numeric: tabular-nums; line-height: 1; margin-bottom: 6px;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.stat.v .stat-num { background-image: linear-gradient(135deg, var(--pass), var(--pass-hi)); }
+.stat.u .stat-num { background-image: linear-gradient(135deg, var(--warn), var(--warn-hi)); }
+.stat.b .stat-num { background-image: linear-gradient(135deg, var(--fail), var(--fail-hi)); }
+.stat-key {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2);
+}
+.stat-desc { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
+.lat { font-family: var(--mono); font-size: 11px; color: var(--ink-3); text-align: right; margin-top: -14px; margin-bottom: 18px; }
+
+/* ══ PLAN ═════════════════════════════════════════════════════════ */
+.plan {
+  background: var(--surface); border: 1px solid var(--rim);
+  border-left: 3px solid var(--ey);
+  border-radius: var(--r); padding: 14px 18px; margin-bottom: 18px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.plan-title {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.10em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 10px;
+}
+.plan-steps { display: flex; flex-wrap: wrap; gap: 6px; }
+.plan-step {
+  font-family: var(--mono); font-size: 11px;
+  background: var(--ey-dim); color: var(--ey);
+  border: 1px solid rgba(255,230,0,0.18); border-radius: var(--r);
+  padding: 3px 9px;
+}
+
+/* ══ SUMMARY ══════════════════════════════════════════════════════ */
+.summary {
+  background: var(--surface); border: 1px solid var(--rim);
+  border-left: 3px solid var(--ey);
+  border-radius: var(--r); padding: 20px 22px; margin-bottom: 22px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+.summary-title {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.10em; text-transform: uppercase;
+  color: var(--ey); margin-bottom: 12px; opacity: 0.85;
+}
+.summary-body { font-size: 14px; line-height: 1.85; color: var(--ink-2); white-space: pre-wrap; }
+
+/* ══ SECTION HDR ══════════════════════════════════════════════════ */
+.sec-hdr { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.sec-hdr-lbl {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.10em; text-transform: uppercase;
+  color: var(--ink-3); flex-shrink: 0;
+}
+.sec-hdr-line { flex: 1; height: 1px; background: var(--rim); }
+
+/* ══ CLAIMS ═══════════════════════════════════════════════════════ */
+.claims { display: flex; flex-direction: column; gap: 9px; margin-bottom: 24px; }
+
+.claim {
+  background: var(--surface); border: 1px solid var(--rim);
+  border-radius: var(--r); overflow: hidden;
+  animation: cl-in 0.26s ease both;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+.claim:hover {
+  border-color: var(--rim-2);
+  transform: translateY(-2px);
+  box-shadow: 0 5px 14px rgba(0,0,0,0.30);
+}
+/* Status stripe — left border only */
+.claim.cv { border-left: 3px solid var(--pass); }
+.claim.cu { border-left: 3px solid var(--warn); }
+.claim.cv:hover { border-left-color: var(--pass-hi); }
+.claim.cu:hover { border-left-color: var(--warn-hi); }
+@keyframes cl-in { from{opacity:0;transform:translateY(7px)} to{opacity:1;transform:none} }
+
+.claim-head { display: flex; gap: 16px; padding: 15px 18px; align-items: flex-start; }
+.claim-left { flex: 1; min-width: 0; }
+.claim-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 9px; }
+
+.tag {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: var(--r);
+}
+.tag.v    { background: var(--pass-dim);          color: var(--pass-hi); }
+.tag.u    { background: var(--warn-dim);          color: var(--warn-hi); }
+.tag.af   { background: rgba(33,163,102,0.08);   color: #2ecc87; border: 1px solid rgba(33,163,102,0.18); }
+.tag.mda  { background: var(--ey-dim);           color: var(--ey); border: 1px solid rgba(255,230,0,0.18); }
+.tag.note { background: rgba(167,139,250,0.08);  color: #b39cf0; border: 1px solid rgba(167,139,250,0.18); }
+.tag.ltr  { background: var(--warn-dim);         color: var(--warn-hi); border: 1px solid rgba(212,117,10,0.18); }
+.tag.pg   { font-weight: 400; background: transparent; color: var(--ink-3); margin-left: auto; }
+
+.claim-text { font-size: 14px; line-height: 1.7; color: var(--ink); }
+
+/* Confidence ring */
+.conf { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; margin-top: 1px; }
+.conf svg { width: 58px; height: 58px; }
+.conf-lbl { font-family: var(--mono); font-size: 9px; color: var(--ink-3); letter-spacing: 0.06em; text-align: center; }
+
+/* Evidence */
+.evidence {
+  padding: 11px 18px 14px; border-top: 1px solid var(--rim);
+  background: var(--raised);
+}
+.ev-head {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  color: var(--ink-3); margin-bottom: 7px;
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+}
+.ev-head .doc { color: var(--ink-2); }
+.ev-quote {
+  font-family: var(--mono); font-size: 12px; color: var(--ink-2);
+  line-height: 1.7; padding-left: 12px;
+  border-left: 2px solid var(--rim-2);
+}
+/* Quote stripe matches claim status */
+.claim.cv .ev-quote { border-left-color: var(--pass); }
+.claim.cu .ev-quote { border-left-color: var(--warn); }
+.ev-reason { font-size: 12px; color: var(--ink-3); margin-top: 7px; padding-left: 14px; font-style: italic; }
+
+/* ══ BLOCKED ══════════════════════════════════════════════════════ */
+.blocked-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 24px; }
+.blocked-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  font-family: var(--mono); font-size: 12px; color: var(--fail-hi);
+  background: var(--fail-dim); border: 1px solid rgba(214,64,69,0.15);
+  border-left: 3px solid var(--fail); border-radius: var(--r);
+  padding: 10px 14px;
+}
+.bx { color: var(--fail); flex-shrink: 0; margin-top: 1px; }
+
+/* ══ RESPONSIVE ═══════════════════════════════════════════════════ */
+@media (max-width: 720px) {
+  :root { --sb: 100%; }
+  .workspace { grid-template-columns: 1fr; grid-template-rows: auto 1fr; overflow: auto; }
+  body, html { overflow: auto; height: auto; }
+  .shell { height: auto; }
+  .sidebar { max-height: 440px; }
+  .main { min-height: 600px; }
+  .out { overflow: visible; }
+  .stats { grid-template-columns: 1fr; }
+  .empty-gfx { display: none; }
+}
 </style>
 </head>
 <body>
 
-<header>
-  <div class="logo">Fin<span>Sight</span></div>
-  <div class="header-meta">Regulatory-Grade Financial Intelligence</div>
-</header>
+<div class="shell">
 
-<main>
-
-  <div class="query-panel">
-    <div class="query-label">Analysis Query</div>
-    <div class="query-row">
-      <textarea id="query-input" rows="3"
-        placeholder="Compare Infosys and TCS operating margins FY2022–2024 and flag any anomalies or risk disclosures related to margin pressure."></textarea>
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div class="logo-badge">FS</div>
+      <div class="logo-name">Fin<span>Sight</span></div>
     </div>
-    <div class="filters">
-      <input type="text" id="company-filter" placeholder="Company filter (e.g. Infosys)">
-      <input type="text" id="fy-filter" placeholder="Fiscal year (e.g. 2024)">
-      <button id="run-btn">Run Analysis</button>
+    <div class="hdr-sep"></div>
+    <div class="hdr-sub">Regulatory-Grade Financial Intelligence</div>
+    <div class="hdr-end">
+      <div class="status-dot" id="sdot"></div>
+      <div class="status-txt" id="stxt">Ready</div>
     </div>
-  </div>
+  </header>
 
-  <div id="error-banner" class="error-banner"></div>
+  <div class="workspace">
 
-  <div id="progress">
-    <div class="progress-title">Agent Pipeline</div>
-    <div class="events" id="event-list"></div>
-  </div>
+    <!-- Sidebar -->
+    <aside class="sidebar">
 
-  <div id="results">
-    <!-- populated by JS -->
-  </div>
+      <div class="sb-block">
+        <label class="blk-label" for="qi">Analysis Query</label>
+        <textarea id="qi" rows="4"
+          placeholder="Compare Infosys and TCS operating margins FY2022–2024 and flag any margin-pressure risk disclosures."></textarea>
+        <div class="filter-grid">
+          <div class="fld">
+            <label class="fld-lbl" for="fco">Company</label>
+            <input type="text" id="fco" placeholder="e.g. Infosys">
+          </div>
+          <div class="fld">
+            <label class="fld-lbl" for="ffy">Fiscal Year</label>
+            <input type="text" id="ffy" placeholder="e.g. 2024">
+          </div>
+        </div>
+        <button class="run-btn" id="rbtn">
+          <div class="spin" aria-hidden="true"></div>
+          <span id="rlbl">Run Analysis</span>
+        </button>
+      </div>
 
-  <div id="empty-state" class="empty-state">
-    <div style="font-size:28px;opacity:.2">⬡</div>
-    <p>Enter a query above to begin analysis.</p>
-    <div class="empty-qs">
-      <button class="qs-btn">Compare Infosys and TCS operating margins FY2022–2024 and flag any anomalies</button>
-      <button class="qs-btn">What were the key revenue drivers for Wipro in FY2024 and how did they differ from FY2022?</button>
-      <button class="qs-btn">Identify all mentions of attrition risk across all three companies in FY2023</button>
-      <button class="qs-btn">What guidance did each company provide for FY2025 capex vs actual FY2024 capex?</button>
-    </div>
-  </div>
-
-</main>
-
-<script>
-const btn       = document.getElementById('run-btn');
-const qInput    = document.getElementById('query-input');
-const coFilter  = document.getElementById('company-filter');
-const fyFilter  = document.getElementById('fy-filter');
-const progress  = document.getElementById('progress');
-const evList    = document.getElementById('event-list');
-const results   = document.getElementById('results');
-const errBanner = document.getElementById('error-banner');
-const emptyState= document.getElementById('empty-state');
-
-// Quick-start buttons
-document.querySelectorAll('.qs-btn').forEach(b => {
-  b.addEventListener('click', () => {
-    qInput.value = b.textContent;
-    qInput.focus();
-  });
-});
-
-function ts() {
-  const now = new Date();
-  return now.toTimeString().slice(0,8);
-}
-
-function addEvent(type, msg) {
-  const ev = document.createElement('div');
-  ev.className = 'ev';
-  ev.innerHTML = `<span class="ev-ts">${ts()}</span><span class="ev-tag ${type}">${type.toUpperCase()}</span><span class="ev-msg">${msg}</span>`;
-  evList.appendChild(ev);
-  evList.scrollTop = evList.scrollHeight;
-}
-
-function sectionClass(st) {
-  const map = { audited_financials: 'section-af', mda: 'section-mda', notes: 'section-notes', letter: 'section-letter' };
-  return map[st] || '';
-}
-
-function confColor(score) {
-  if (score >= 0.65) return 'var(--verified)';
-  if (score >= 0.50) return 'var(--uncertain)';
-  return 'var(--blocked)';
-}
-
-function buildClaimCard(c, status) {
-  const cit = c.citation || {};
-  const conf = cit.confidence || 0;
-  const pct  = Math.round(conf * 100);
-  const st   = cit.section_type || 'unknown';
-  const stLabel = { audited_financials: 'AUDITED FINANCIALS', mda: 'MD&A', notes: 'NOTES', letter: 'LETTER', unknown: 'UNKNOWN' }[st] || st.toUpperCase();
-
-  const card = document.createElement('div');
-  card.className = `claim-card ${status}`;
-  card.innerHTML = `
-    <div class="claim-top">
-      <div class="claim-text">${esc(c.claim)}</div>
-      <div class="claim-meta">
-        <span class="meta-tag">pg ${cit.page || '—'}</span>
-        <span class="meta-tag ${sectionClass(st)}">${stLabel}</span>
-        <div class="confidence-wrap">
-          <div class="conf-bar-track"><div class="conf-bar-fill" style="width:${pct}%;background:${confColor(conf)}"></div></div>
-          <span class="conf-val">${pct}%</span>
+      <div class="sb-block">
+        <span class="blk-label">Quick Queries</span>
+        <div class="presets">
+          <button class="preset">Compare Infosys and TCS operating margins FY2022–2024 and flag any anomalies</button>
+          <button class="preset">What were the key revenue drivers for Wipro in FY2024 vs FY2022?</button>
+          <button class="preset">Identify attrition risk disclosures across all three companies in FY2023</button>
+          <button class="preset">Capex guidance each company gave for FY2025 vs actual FY2024 spend</button>
         </div>
       </div>
-    </div>
-    ${cit.snippet ? `
-    <div class="claim-snippet">
-      <div class="snippet-src">
-        <span>${esc(cit.document || 'unknown')}</span>
+
+      <div class="sb-block fill">
+        <span class="blk-label">Event Log</span>
+        <div class="log-wrap">
+          <div class="log" id="log"></div>
+        </div>
       </div>
-      <div class="snippet-text">${esc(cit.snippet)}</div>
-      ${c.audit_reason ? `<div class="reason-text">${esc(c.audit_reason)}</div>` : ''}
-    </div>` : ''}
-  `;
-  return card;
+
+    </aside>
+
+    <!-- Main panel -->
+    <main class="main">
+
+      <!-- Pipeline -->
+      <div class="pipe-bar">
+        <div class="pipe-bar-lbl">Agent Pipeline</div>
+        <div class="pipe">
+          <div class="pn" id="np" data-state="idle">
+            <div class="pn-id">PL</div><div class="pn-name">Planner</div>
+            <div class="pn-badge" id="bp"></div>
+          </div>
+          <div class="pc" id="c1"></div>
+          <div class="pn" id="nr" data-state="idle">
+            <div class="pn-id">RT</div><div class="pn-name">Retriever</div>
+            <div class="pn-badge" id="br"></div>
+          </div>
+          <div class="pc" id="c2"></div>
+          <div class="pn" id="na" data-state="idle">
+            <div class="pn-id">AN</div><div class="pn-name">Analyst</div>
+            <div class="pn-badge" id="ba"></div>
+          </div>
+          <div class="pc" id="c3"></div>
+          <div class="pn" id="nu" data-state="idle">
+            <div class="pn-id">AU</div><div class="pn-name">Auditor</div>
+            <div class="pn-badge" id="bu"></div>
+          </div>
+          <div class="pc" id="c4"></div>
+          <div class="pn" id="nc" data-state="idle">
+            <div class="pn-id">CP</div><div class="pn-name">Comparator</div>
+            <div class="pn-badge" id="bc"></div>
+          </div>
+          <div class="pc" id="c5"></div>
+          <div class="pn" id="ns" data-state="idle">
+            <div class="pn-id">SY</div><div class="pn-name">Synthesizer</div>
+            <div class="pn-badge" id="bs"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Output -->
+      <div class="out" id="out">
+
+        <div class="empty" id="empty">
+          <div class="empty-gfx" aria-hidden="true">
+            <div class="empty-node"><div class="empty-node-id">PL</div><div class="empty-node-nm">Planner</div></div>
+            <div class="empty-wire"></div>
+            <div class="empty-node"><div class="empty-node-id">RT</div><div class="empty-node-nm">Retriever</div></div>
+            <div class="empty-wire"></div>
+            <div class="empty-node"><div class="empty-node-id">AN</div><div class="empty-node-nm">Analyst</div></div>
+            <div class="empty-wire"></div>
+            <div class="empty-node"><div class="empty-node-id">AU</div><div class="empty-node-nm">Auditor</div></div>
+          </div>
+          <h3>No analysis yet</h3>
+          <p>Enter a query in the sidebar to extract verified claims from Infosys, TCS, and Wipro annual reports.</p>
+          <div class="empty-hint">Ctrl + Enter to run</div>
+        </div>
+
+        <div class="err" id="err" role="alert"></div>
+        <div id="res" style="display:none"></div>
+
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+/* ── Refs ─────────────────────────────────────────── */
+const QI   = document.getElementById('qi');
+const FCO  = document.getElementById('fco');
+const FFY  = document.getElementById('ffy');
+const RBTN = document.getElementById('rbtn');
+const RLBL = document.getElementById('rlbl');
+const LOG  = document.getElementById('log');
+const EMPT = document.getElementById('empty');
+const RES  = document.getElementById('res');
+const ERR  = document.getElementById('err');
+const SDOT = document.getElementById('sdot');
+const STXT = document.getElementById('stxt');
+
+const ND = {
+  planner:     document.getElementById('np'),
+  retriever:   document.getElementById('nr'),
+  analyst:     document.getElementById('na'),
+  auditor:     document.getElementById('nu'),
+  comparator:  document.getElementById('nc'),
+  synthesizer: document.getElementById('ns'),
+};
+const BD = {
+  planner:     document.getElementById('bp'),
+  retriever:   document.getElementById('br'),
+  analyst:     document.getElementById('ba'),
+  auditor:     document.getElementById('bu'),
+  comparator:  document.getElementById('bc'),
+  synthesizer: document.getElementById('bs'),
+};
+const CN = [1,2,3,4,5].map(i => document.getElementById('c' + i));
+
+/* ── Utils ────────────────────────────────────────── */
+const esc = s => {
+  if (typeof s !== 'string') s = String(s ?? '');
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+};
+const ts = () => new Date().toTimeString().slice(0,8);
+
+function setStatus(txt, live) {
+  STXT.textContent = txt;
+  SDOT.className = 'status-dot' + (live ? ' live' : '');
+}
+function setNode(k, state, count) {
+  if (!ND[k]) return;
+  ND[k].dataset.state = state;
+  if (count !== undefined) {
+    BD[k].textContent = String(count);
+    BD[k].className = 'pn-badge' + (count !== '' && count != null ? ' on' : '');
+  }
+}
+function setConn(i, cls) {
+  const c = CN[i - 1]; if (c) c.className = 'pc' + (cls ? ' ' + cls : '');
+}
+function resetPipeline() {
+  Object.keys(ND).forEach(k => setNode(k, 'idle', ''));
+  CN.forEach(c => c.className = 'pc');
+}
+function addLog(type, msg) {
+  const r = document.createElement('div');
+  r.className = 'log-row';
+  r.innerHTML =
+    '<span class="log-ts">' + ts() + '</span>' +
+    '<span class="log-tag ' + type + '">' + type.toUpperCase() + '</span>' +
+    '<span class="log-msg">' + esc(msg) + '</span>';
+  LOG.appendChild(r);
+  r.scrollIntoView({ block: 'nearest' });
 }
 
-function renderResults(data) {
-  const verified  = data.verified_claims  || [];
-  const uncertain = data.uncertain_claims || [];
-  const audit     = data.audit_log        || {};
-  const blocked   = audit.blocked_unverifiable || [];
-  const plan      = audit.plan || [];
-  const latency   = audit.latency_ms;
+/* ── Confidence ring ──────────────────────────────── */
+function ring(score, status) {
+  const pct  = Math.round(score * 100);
+  const fill = Math.min(99.9, score * 100).toFixed(1);
+  const gap  = (100 - parseFloat(fill)).toFixed(1);
+  const col  = status === 'verified' ? '#2ECC87' : score >= 0.5 ? '#F08C20' : '#E86368';
+  const trk  = '#3E3E4E';
+  return '<svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Confidence ' + pct + '%">' +
+    '<circle cx="18" cy="18" r="15.9" fill="none" stroke="' + trk + '" stroke-width="3.5"/>' +
+    '<circle cx="18" cy="18" r="15.9" fill="none" stroke="' + col + '" stroke-width="3.5"' +
+    ' stroke-dasharray="' + fill + ' ' + gap + '" stroke-linecap="round" transform="rotate(-90 18 18)"/>' +
+    '<text x="18" y="21.5" text-anchor="middle"' +
+    ' style="font-family:monospace;font-size:9.5px;font-weight:700;fill:' + col + '">' + pct + '</text>' +
+    '</svg>';
+}
 
-  results.innerHTML = '';
+/* ── Section tag ──────────────────────────────────── */
+const ST = {
+  audited_financials: ['AF','af'],
+  mda:                ['MD&A','mda'],
+  notes:              ['NOTES','note'],
+  letter:             ['LETTER','ltr'],
+};
+const stag = st => {
+  const [l,c] = ST[st] || [st ? st.toUpperCase() : '?',''];
+  return '<span class="tag ' + c + '">' + l + '</span>';
+};
 
-  // Header row
-  const hdr = document.createElement('div');
-  hdr.className = 'result-header';
-  hdr.innerHTML = `
-    <h2>Analysis Results</h2>
-    <span class="pill verified">${verified.length} VERIFIED</span>
-    <span class="pill uncertain">${uncertain.length} UNCERTAIN</span>
-    ${blocked.length ? `<span class="pill blocked">${blocked.length} BLOCKED</span>` : ''}
-    ${latency ? `<span class="latency">${latency}ms</span>` : ''}
-  `;
-  results.appendChild(hdr);
+/* ── Claim card ───────────────────────────────────── */
+function claimCard(c, status, delay) {
+  const cit = c.citation || {};
+  const sc  = typeof cit.confidence === 'number' ? cit.confidence : 0;
+  const st  = cit.section_type || '';
+  const doc = cit.document || '';
+  const pg  = cit.page ? 'pg ' + cit.page : '';
+  const tc  = status === 'verified' ? 'v' : 'u';
+  const cls = status === 'verified' ? 'cv' : 'cu';
 
-  // Plan
-  if (plan.length) {
-    const pc = document.createElement('div');
-    pc.className = 'plan-card';
-    pc.innerHTML = `<h3>Execution Plan</h3><div class="plan-subtasks">${plan.map(s => `<span class="subtask-tag">${esc(s)}</span>`).join('')}</div>`;
-    results.appendChild(pc);
+  const el = document.createElement('div');
+  el.className = 'claim ' + cls;
+  el.style.animationDelay = (delay * 50) + 'ms';
+
+  let h =
+    '<div class="claim-head">' +
+      '<div class="claim-left">' +
+        '<div class="claim-tags">' +
+          '<span class="tag ' + tc + '">' + status.toUpperCase() + '</span>' +
+          (st ? stag(st) : '') +
+          (pg ? '<span class="tag pg">' + esc(pg) + '</span>' : '') +
+        '</div>' +
+        '<div class="claim-text">' + esc(c.claim) + '</div>' +
+      '</div>' +
+      '<div class="conf">' + ring(sc, status) + '<div class="conf-lbl">CONF</div></div>' +
+    '</div>';
+
+  if (cit.snippet) {
+    h +=
+      '<div class="evidence">' +
+        '<div class="ev-head">' +
+          (doc ? '<span class="doc">' + esc(doc) + '</span>' : '') +
+          (pg  ? '<span>&middot;&nbsp;' + esc(pg) + '</span>' : '') +
+        '</div>' +
+        '<div class="ev-quote">' + esc(cit.snippet) + '</div>' +
+        (c.audit_reason ? '<div class="ev-reason">' + esc(c.audit_reason) + '</div>' : '') +
+      '</div>';
   }
 
-  // Summary
+  el.innerHTML = h;
+  return el;
+}
+
+/* ── Section header ───────────────────────────────── */
+function sechdr(label) {
+  const d = document.createElement('div');
+  d.className = 'sec-hdr';
+  d.innerHTML = '<div class="sec-hdr-lbl">' + esc(label) + '</div><div class="sec-hdr-line"></div>';
+  return d;
+}
+
+/* ── Render results ───────────────────────────────── */
+function render(data) {
+  const V  = data.verified_claims  || [];
+  const U  = data.uncertain_claims || [];
+  const AL = data.audit_log        || {};
+  const B  = AL.blocked_unverifiable || [];
+  const PL = AL.plan    || [];
+  const ms = AL.latency_ms;
+
+  RES.innerHTML = '';
+
+  const stats = document.createElement('div');
+  stats.className = 'stats';
+  stats.innerHTML =
+    '<div class="stat v"><div class="stat-num">' + V.length + '</div><div class="stat-key">Verified</div><div class="stat-desc">Claims with verbatim source</div></div>' +
+    '<div class="stat u"><div class="stat-num">' + U.length + '</div><div class="stat-key">Uncertain</div><div class="stat-desc">Low-confidence or ambiguous</div></div>' +
+    '<div class="stat b"><div class="stat-num">' + B.length + '</div><div class="stat-key">Blocked</div><div class="stat-desc">Hallucinations suppressed</div></div>';
+  RES.appendChild(stats);
+
+  if (ms) {
+    const l = document.createElement('div');
+    l.className = 'lat'; l.textContent = ms + 'ms';
+    RES.appendChild(l);
+  }
+
+  if (PL.length) {
+    const p = document.createElement('div');
+    p.className = 'plan';
+    p.innerHTML = '<div class="plan-title">Execution Plan &mdash; ' + PL.length + ' subtask' + (PL.length !== 1 ? 's' : '') + '</div>' +
+      '<div class="plan-steps">' + PL.map(s => '<span class="plan-step">' + esc(s) + '</span>').join('') + '</div>';
+    RES.appendChild(p);
+  }
+
   if (data.summary) {
-    const sc = document.createElement('div');
-    sc.className = 'summary-card';
-    sc.innerHTML = `<h3>Summary</h3><div class="summary-body">${esc(data.summary)}</div>`;
-    results.appendChild(sc);
+    const s = document.createElement('div');
+    s.className = 'summary';
+    s.innerHTML = '<div class="summary-title">Synthesis</div><div class="summary-body">' + esc(data.summary) + '</div>';
+    RES.appendChild(s);
   }
 
-  // Verified claims
-  if (verified.length) {
-    const label = document.createElement('div');
-    label.className = 'section-label';
-    label.textContent = `Verified Claims — ${verified.length}`;
-    results.appendChild(label);
-    const grid = document.createElement('div');
-    grid.className = 'claims-grid';
-    verified.forEach(c => grid.appendChild(buildClaimCard(c, 'verified')));
-    results.appendChild(grid);
+  if (V.length) {
+    RES.appendChild(sechdr('Verified Claims — ' + V.length));
+    const list = document.createElement('div');
+    list.className = 'claims';
+    V.forEach((c, i) => list.appendChild(claimCard(c, 'verified', i)));
+    RES.appendChild(list);
   }
 
-  // Uncertain claims
-  if (uncertain.length) {
-    const label = document.createElement('div');
-    label.className = 'section-label';
-    label.textContent = `Uncertain Claims — ${uncertain.length}`;
-    results.appendChild(label);
-    const grid = document.createElement('div');
-    grid.className = 'claims-grid';
-    uncertain.forEach(c => grid.appendChild(buildClaimCard(c, 'uncertain')));
-    results.appendChild(grid);
+  if (U.length) {
+    RES.appendChild(sechdr('Uncertain Claims — ' + U.length));
+    const list = document.createElement('div');
+    list.className = 'claims';
+    U.forEach((c, i) => list.appendChild(claimCard(c, 'uncertain', i)));
+    RES.appendChild(list);
   }
 
-  // Blocked
-  if (blocked.length) {
-    const label = document.createElement('div');
-    label.className = 'section-label';
-    label.textContent = `Blocked — Unverifiable`;
-    results.appendChild(label);
+  if (B.length) {
+    RES.appendChild(sechdr('Blocked — Unverifiable'));
     const list = document.createElement('div');
     list.className = 'blocked-list';
-    blocked.forEach(b => {
-      const item = document.createElement('div');
-      item.className = 'blocked-item';
-      item.innerHTML = `<span class="blocked-icon">✕</span>${esc(b)}`;
-      list.appendChild(item);
+    B.forEach(b => {
+      const row = document.createElement('div');
+      row.className = 'blocked-row';
+      row.innerHTML = '<span class="bx" aria-hidden="true">✕</span>' + esc(b);
+      list.appendChild(row);
     });
-    results.appendChild(list);
+    RES.appendChild(list);
   }
 
-  results.classList.add('visible');
+  EMPT.style.display = 'none';
+  RES.style.display = 'block';
 }
 
-function esc(s) {
-  if (typeof s !== 'string') s = String(s || '');
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+/* ── Run query ────────────────────────────────────── */
+async function run() {
+  const q = QI.value.trim();
+  if (!q) { QI.focus(); return; }
 
-function showError(msg) {
-  errBanner.textContent = msg;
-  errBanner.classList.add('visible');
-}
+  RBTN.disabled = true;
+  RBTN.classList.add('busy');
+  RLBL.textContent = 'Analyzing…';
+  setStatus('Analyzing', true);
+  LOG.innerHTML = '';
+  ERR.classList.remove('on');
+  RES.style.display = 'none';
+  RES.innerHTML = '';
+  EMPT.style.display = 'none';
+  resetPipeline();
 
-async function runQuery() {
-  const query = qInput.value.trim();
-  if (!query) { qInput.focus(); return; }
-
-  // Reset
-  btn.disabled = true;
-  btn.textContent = 'Running…';
-  errBanner.classList.remove('visible');
-  evList.innerHTML = '';
-  results.classList.remove('visible');
-  results.innerHTML = '';
-  progress.classList.add('visible');
-  emptyState.style.display = 'none';
-
-  const body = {
-    query,
-    company_filter: coFilter.value.trim() || null,
-    fiscal_year_filter: fyFilter.value.trim() || null,
-  };
-
-  let subtasks = [];
+  let rc = 0, ac = 0;
 
   try {
     const resp = await fetch('/query/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        query:              q,
+        company_filter:     FCO.value.trim() || null,
+        fiscal_year_filter: FFY.value.trim() || null,
+      }),
     });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status + ': ' + await resp.text());
 
-    if (!resp.ok) {
-      const t = await resp.text();
-      throw new Error(`HTTP ${resp.status}: ${t}`);
-    }
-
-    const reader  = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let   buf     = '';
+    const rdr = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
 
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await rdr.read();
       if (done) break;
-      buf += decoder.decode(value, { stream: true });
-
+      buf += dec.decode(value, { stream: true });
       const lines = buf.split('\n');
-      buf = lines.pop(); // keep incomplete line
-
+      buf = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
-        let ev;
-        try { ev = JSON.parse(line.slice(6)); } catch { continue; }
-
+        let ev; try { ev = JSON.parse(line.slice(6)); } catch { continue; }
         switch (ev.event) {
           case 'start':
-            addEvent('start', `task ${ev.task_id ? ev.task_id.slice(0,8) : '—'} — query accepted`);
+            addLog('start', 'task ' + (ev.task_id||'').slice(0,8) + ' accepted');
+            setNode('planner', 'running');
             break;
-          case 'planned':
-            subtasks = ev.subtasks || [];
-            addEvent('planned', `${subtasks.length} subtask${subtasks.length !== 1 ? 's' : ''}: ${subtasks.map(s => `"${s.slice(0,40)}${s.length>40?'…':''}"` ).join(' · ')}`);
+          case 'planned': {
+            const n = (ev.subtasks||[]).length;
+            addLog('planned', n + ' subtask' + (n !== 1 ? 's' : ''));
+            setNode('planner', 'done', n);
+            setConn(1, 'active'); setNode('retriever', 'running');
             break;
+          }
           case 'retrieved':
-            addEvent('retrieved', `${ev.subtask ? ev.subtask.slice(0,50) : '?'} — ${ev.chunks} chunk${ev.chunks !== 1 ? 's' : ''}`);
+            rc++;
+            addLog('retrieved', '[' + rc + '] ' + (ev.subtask||'').slice(0,44) + ' · ' + ev.chunks + ' chunks');
+            setNode('retriever', 'running', rc);
             break;
           case 'analyzed':
-            addEvent('analyzed', `${ev.subtask ? ev.subtask.slice(0,50) : '?'} — ${ev.claims} claim${ev.claims !== 1 ? 's' : ''} extracted`);
+            ac++;
+            addLog('analyzed', '[' + ac + '] ' + (ev.subtask||'').slice(0,44) + ' · ' + ev.claims + ' claims');
+            setConn(2, 'active'); setNode('analyst', 'running', ac);
             break;
           case 'audited':
-            addEvent('audited', `verified ${ev.verified}  uncertain ${ev.uncertain}  blocked ${ev.blocked}`);
+            addLog('audited', 'verified ' + ev.verified + ' · uncertain ' + ev.uncertain + ' · blocked ' + ev.blocked);
+            setNode('retriever', 'done'); setNode('analyst', 'done');
+            setConn(2, 'done'); setConn(3, 'active'); setNode('auditor', 'running');
+            setTimeout(() => {
+              setNode('auditor', 'done', ev.verified);
+              setConn(3, 'done'); setConn(4, 'active'); setNode('comparator', 'running');
+            }, 360);
             break;
           case 'compared':
-            addEvent('compared', `${ev.deltas} delta${ev.deltas !== 1 ? 's' : ''} computed`);
+            addLog('compared', ev.deltas + ' delta' + (ev.deltas !== 1 ? 's' : ''));
+            setTimeout(() => {
+              setNode('comparator', 'done', ev.deltas);
+              setConn(4, 'done'); setConn(5, 'active'); setNode('synthesizer', 'running');
+            }, 250);
             break;
           case 'done':
-            addEvent('done', 'synthesis complete');
-            if (ev.result) renderResults(ev.result);
+            addLog('done', 'synthesis complete');
+            setTimeout(() => {
+              setNode('synthesizer', 'done'); setConn(5, 'done');
+              CN.forEach(c => { if (!c.classList.contains('done')) c.className = 'pc done'; });
+            }, 200);
+            if (ev.result) render(ev.result);
+            setStatus('Complete', false);
             break;
           case 'error':
-            addEvent('error', `${ev.stage}: ${ev.detail}`);
-            showError(`Pipeline error in ${ev.stage}: ${ev.detail}`);
+            addLog('error', (ev.stage||'?') + ': ' + (ev.detail||'error'));
+            setStatus('Error', false);
             break;
         }
       }
     }
-  } catch (err) {
-    showError(err.message || 'Unexpected error — is the API running?');
-    addEvent('error', err.message || 'connection failed');
+  } catch (e) {
+    addLog('error', e.message || 'connection failed');
+    ERR.textContent = (e.message||'Unexpected error') + ' — is the FinSight API running?';
+    ERR.classList.add('on');
+    EMPT.style.display = 'flex';
+    setStatus('Error', false);
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Run Analysis';
+    RBTN.disabled = false;
+    RBTN.classList.remove('busy');
+    RLBL.textContent = 'Run Analysis';
+    if (STXT.textContent === 'Analyzing') setStatus('Ready', false);
   }
 }
 
-btn.addEventListener('click', runQuery);
-qInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runQuery();
-});
+/* ── Bindings ─────────────────────────────────────── */
+RBTN.addEventListener('click', run);
+QI.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) run(); });
+document.querySelectorAll('.preset').forEach(b =>
+  b.addEventListener('click', () => { QI.value = b.textContent; QI.focus(); })
+);
 </script>
-
 </body>
 </html>
