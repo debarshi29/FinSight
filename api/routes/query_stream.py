@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from semantic_kernel import KernelArguments
 
 from agents.synthesizer import synthesize_report
+from api.metrics_store import metrics
 from core.config import settings
 from core.models import AnalysisReport, AuditLog
 from core.sk_kernel import get_kernel
@@ -53,6 +54,7 @@ async def run_query_stream(req: QueryRequest):
         kernel = get_kernel()
         agents_invoked: list[str] = []
 
+        metrics.record_start()
         yield _event("start", {"task_id": task_id, "query": req.query})
 
         # ── PlannerAgent ────────────────────────────────────────────────────
@@ -65,6 +67,7 @@ async def run_query_stream(req: QueryRequest):
             )
             subtasks = _parse_subtasks(str(plan_result), req.query)
         except Exception as exc:
+            metrics.record_error(task_id, req.query, "PlannerAgent", str(exc))
             yield _event("error", {"stage": "PlannerAgent", "detail": str(exc)})
             return
 
@@ -143,6 +146,7 @@ async def run_query_stream(req: QueryRequest):
             )
             verified, uncertain, unverifiable_claims = _parse_audit_result(str(audit_result))
         except Exception as exc:
+            metrics.record_error(task_id, req.query, "AuditorAgent", str(exc))
             yield _event("error", {"stage": "AuditorAgent", "detail": str(exc)})
             return
 
@@ -181,6 +185,7 @@ async def run_query_stream(req: QueryRequest):
             agents_invoked.append("SynthesizerAgent")
             summary = await synthesize_report(req.query, verified, uncertain, comparison, task_id)
         except Exception as exc:
+            metrics.record_error(task_id, req.query, "SynthesizerAgent", str(exc))
             yield _event("error", {"stage": "SynthesizerAgent", "detail": str(exc)})
             return
 
@@ -209,6 +214,14 @@ async def run_query_stream(req: QueryRequest):
             audit_log=audit_log,
         )
 
+        metrics.record_complete(
+            task_id=task_id,
+            query=req.query,
+            latency_ms=latency_ms,
+            verified=len(verified),
+            uncertain=len(uncertain),
+            blocked=len(unverifiable_claims),
+        )
         yield _event("done", {"result": report.to_dict()})
 
     return StreamingResponse(

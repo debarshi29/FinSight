@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from semantic_kernel import KernelArguments
 
 from agents.synthesizer import synthesize_report
+from api.metrics_store import metrics
 from core.config import settings
 from core.models import AnalysisReport, AuditedClaim, AuditLog, AuditStatus, Citation
 from core.sk_kernel import get_kernel
@@ -35,8 +36,7 @@ async def run_query(req: QueryRequest):
     start_ms = time.time()
     agents_invoked: list[str] = []
 
-    # The kernel is the single orchestration point — every agent hop goes
-    # through kernel.invoke() with KernelArguments passing context forward.
+    metrics.record_start()
     kernel = get_kernel()
     log.info("query.start", task_id=task_id, query=req.query[:100])
 
@@ -166,6 +166,14 @@ async def run_query(req: QueryRequest):
         audit_log=audit_log,
     )
 
+    metrics.record_complete(
+        task_id=task_id,
+        query=req.query,
+        latency_ms=latency_ms,
+        verified=len(verified),
+        uncertain=len(uncertain),
+        blocked=len(unverifiable_claims),
+    )
     log.info(
         "query.complete",
         task_id=task_id,

@@ -7,11 +7,13 @@ import structlog
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.middleware.guardrails import guardrails_middleware
 from api.routes import eval as eval_router
 from api.routes import ingest as ingest_router
+from api.routes import metrics as metrics_router
 from api.routes import query as query_router
 from api.routes import query_stream as query_stream_router
 from core.config import settings
@@ -48,10 +50,18 @@ def create_app() -> FastAPI:
     app.include_router(query_router.router)
     app.include_router(query_stream_router.router)
     app.include_router(eval_router.router)
+    app.include_router(metrics_router.router)
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
         app.mount("/ui", StaticFiles(directory=str(static_dir), html=True), name="static")
+
+        dashboard_file = static_dir / "dashboard.html"
+        if dashboard_file.exists():
+
+            @app.get("/dashboard", include_in_schema=False)
+            async def dashboard():
+                return FileResponse(str(dashboard_file))
 
     @app.get("/health")
     async def health():
