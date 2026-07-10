@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FinSight · Metrics</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+/* ══ TOKENS ════════════════════════════════════════════════════════ */
+:root {
+  --bg:       #000000;
+  --s1:       #0D0D0D;
+  --s2:       #111111;
+  --s3:       #181818;
+  --rim:      #222222;
+  --rim2:     #333333;
+  --rim3:     #555555;
+  --ink:      #FFFFFF;
+  --ink2:     #AAAAAA;
+  --ink3:     #555555;
+  --ey:       #FFE600;
+  --ey-d:     #1A1200;
+  --ey-dim:   rgba(255,230,0,0.07);
+  --ey-mid:   rgba(255,230,0,0.14);
+  --ey-glow:  rgba(255,230,0,0.26);
+  --pass:     #21A366;
+  --pass-hi:  #2ECC87;
+  --pass-dim: rgba(33,163,102,0.10);
+  --warn:     #D4750A;
+  --warn-hi:  #F08C20;
+  --warn-dim: rgba(212,117,10,0.10);
+  --fail:     #D64045;
+  --fail-hi:  #E86368;
+  --fail-dim: rgba(214,64,69,0.10);
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --mono: 'SF Mono','Cascadia Code','Fira Code','Consolas',monospace;
+  --r: 2px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{height:100%}
+body{
+  background:var(--bg);color:var(--ink);font-family:var(--sans);
+  font-size:14px;line-height:1.5;min-height:100%;
+  -webkit-font-smoothing:antialiased;
+}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:0.01ms!important;transition-duration:0.01ms!important}
+}
+
+/* ══ HEADER ════════════════════════════════════════════════════════ */
+header{
+  display:flex;align-items:center;gap:16px;
+  padding:0 24px;height:52px;
+  background:var(--s1);border-bottom:1px solid var(--rim);
+  position:sticky;top:0;z-index:10;
+}
+header::after{
+  content:'';position:absolute;bottom:-3px;left:0;right:0;
+  height:3px;background:var(--ey);
+}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-badge{
+  width:28px;height:28px;border-radius:var(--r);background:var(--ey);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  font-family:var(--mono);font-size:10px;font-weight:800;color:#000;
+}
+.logo-name{font-size:14px;font-weight:700;color:var(--ink);letter-spacing:-0.01em}
+.logo-name span{color:var(--ey)}
+.hdr-sep{width:1px;height:16px;background:var(--rim);flex-shrink:0}
+.hdr-sub{font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:0.06em}
+.hdr-end{margin-left:auto;display:flex;align-items:center;gap:14px}
+
+/* Refresh indicator */
+.refresh-ring{position:relative;width:22px;height:22px;flex-shrink:0}
+.refresh-ring svg{width:22px;height:22px;transform:rotate(-90deg)}
+.refresh-ring-bg{fill:none;stroke:var(--rim2);stroke-width:2.5}
+.refresh-ring-arc{fill:none;stroke:var(--ey);stroke-width:2.5;stroke-linecap:round;transition:stroke-dashoffset 1s linear}
+.refresh-lbl{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+
+.live-dot{
+  width:7px;height:7px;border-radius:50%;background:var(--pass);
+  box-shadow:0 0 0 2px rgba(33,163,102,0.15);
+  animation:ldot 2.5s ease-in-out infinite;
+}
+.live-dot.err{background:var(--fail);box-shadow:0 0 0 2px var(--fail-dim)}
+@keyframes ldot{0%,100%{opacity:1}50%{opacity:0.3}}
+.live-txt{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+
+/* Nav pill */
+.nav-pill{
+  font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;
+  color:var(--ink3);text-decoration:none;padding:4px 10px;
+  border:1px solid var(--rim);border-radius:var(--r);
+  transition:border-color 0.12s,color 0.12s;
+}
+.nav-pill:hover{border-color:var(--ey);color:var(--ey)}
+
+/* ══ LAYOUT ════════════════════════════════════════════════════════ */
+.page{max-width:1280px;margin:0 auto;padding:28px 24px 48px}
+
+/* ══ SECTION LABEL ═════════════════════════════════════════════════ */
+.sec{display:flex;align-items:center;gap:10px;margin-bottom:14px;margin-top:32px}
+.sec:first-child{margin-top:0}
+.sec-lbl{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:0.10em;text-transform:uppercase;color:var(--ink3);flex-shrink:0}
+.sec-lbl::before{content:'';display:inline-block;width:3px;height:10px;background:var(--ey);border-radius:0;margin-right:7px;vertical-align:middle}
+.sec-line{flex:1;height:1px;background:var(--rim)}
+
+/* ══ KPI GRID ══════════════════════════════════════════════════════ */
+.kpi-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+@media(max-width:1100px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:640px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
+
+.kpi{
+  background:var(--s1);border:1px solid var(--rim);border-radius:var(--r);
+  padding:18px 18px 14px;
+  box-shadow:0 1px 3px rgba(0,0,0,0.3);
+  transition:box-shadow 0.18s,transform 0.18s;
+}
+.kpi:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(0,0,0,0.4)}
+.kpi.accent{border-top:2px solid var(--ey)}
+.kpi.v{border-top:2px solid var(--pass)}
+.kpi.u{border-top:2px solid var(--warn)}
+.kpi.b{border-top:2px solid var(--fail)}
+.kpi.neu{border-top:2px solid var(--rim3)}
+
+.kpi-val{
+  font-family:var(--mono);font-size:30px;font-weight:700;
+  font-variant-numeric:tabular-nums;line-height:1;margin-bottom:6px;
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+}
+.kpi.accent .kpi-val{background-image:linear-gradient(135deg,var(--ey),#fff176)}
+.kpi.v .kpi-val{background-image:linear-gradient(135deg,var(--pass),var(--pass-hi))}
+.kpi.u .kpi-val{background-image:linear-gradient(135deg,var(--warn),var(--warn-hi))}
+.kpi.b .kpi-val{background-image:linear-gradient(135deg,var(--fail),var(--fail-hi))}
+.kpi.neu .kpi-val{background-image:linear-gradient(135deg,var(--ink2),var(--ink))}
+.kpi.inf .kpi-val{background-image:linear-gradient(135deg,#60a5fa,#93c5fd)}
+
+.kpi-key{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:var(--ink3)}
+.kpi-sub{font-size:11px;color:var(--ink3);margin-top:3px}
+
+/* ══ CHART GRID ════════════════════════════════════════════════════ */
+.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:800px){.chart-grid{grid-template-columns:1fr}}
+
+.card{
+  background:var(--s1);border:1px solid var(--rim);border-radius:var(--r);
+  padding:20px;box-shadow:0 1px 3px rgba(0,0,0,0.25);
+}
+.card-title{
+  font-family:var(--mono);font-size:10px;font-weight:700;
+  letter-spacing:0.09em;text-transform:uppercase;color:var(--ink3);
+  margin-bottom:18px;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.card-badge{
+  font-family:var(--mono);font-size:10px;color:var(--ey);
+  background:var(--ey-dim);border:1px solid rgba(255,230,0,0.14);
+  border-radius:var(--r);padding:2px 7px;
+}
+
+/* ── Latency histogram ───────────────────────────── */
+.hist{display:flex;flex-direction:column;gap:10px}
+.hist-row{display:flex;align-items:center;gap:10px}
+.hist-lbl{font-family:var(--mono);font-size:10px;color:var(--ink3);width:72px;flex-shrink:0;text-align:right}
+.hist-track{flex:1;height:18px;background:var(--s3);border-radius:1px;position:relative;overflow:hidden}
+.hist-bar{
+  height:100%;background:var(--ey);border-radius:1px;
+  transition:width 0.5s ease;min-width:2px;
+}
+.hist-cnt{font-family:var(--mono);font-size:10px;color:var(--ink3);width:24px;flex-shrink:0;text-align:right}
+
+/* ── Donut (claim outcomes) ──────────────────────── */
+.donut-wrap{display:flex;align-items:center;gap:24px}
+.donut-svg{flex-shrink:0}
+.donut-legend{display:flex;flex-direction:column;gap:8px;flex:1}
+.dl-row{display:flex;align-items:center;gap:8px;font-size:12px}
+.dl-swatch{width:10px;height:10px;border-radius:1px;flex-shrink:0}
+.dl-lbl{color:var(--ink2);flex:1}
+.dl-val{font-family:var(--mono);font-size:12px;color:var(--ink);font-weight:600}
+.dl-pct{font-family:var(--mono);font-size:11px;color:var(--ink3);margin-left:4px}
+
+/* ── Agent bars ──────────────────────────────────── */
+.agent-list{display:flex;flex-direction:column;gap:9px}
+.agent-row{display:flex;align-items:center;gap:10px}
+.agent-nm{font-family:var(--mono);font-size:10px;color:var(--ink2);width:120px;flex-shrink:0}
+.agent-track{flex:1;height:14px;background:var(--s3);border-radius:1px;position:relative;overflow:hidden}
+.agent-bar{
+  height:100%;background:linear-gradient(90deg,var(--ey),rgba(255,230,0,0.5));
+  border-radius:1px;transition:width 0.5s ease;
+}
+.agent-ms{font-family:var(--mono);font-size:10px;color:var(--ink3);width:52px;text-align:right;flex-shrink:0}
+
+/* ── Latency percentile bars ─────────────────────── */
+.perc-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.perc-item{display:flex;flex-direction:column;align-items:center;gap:4px}
+.perc-val{font-family:var(--mono);font-size:22px;font-weight:700;color:var(--ey)}
+.perc-lbl{font-family:var(--mono);font-size:9px;color:var(--ink3);letter-spacing:0.06em;text-transform:uppercase}
+
+/* ══ QUERY TABLE ═══════════════════════════════════════════════════ */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead th{
+  font-family:var(--mono);font-size:9px;font-weight:700;
+  letter-spacing:0.08em;text-transform:uppercase;color:var(--ink3);
+  padding:8px 10px;border-bottom:1px solid var(--rim);text-align:left;
+  white-space:nowrap;
+}
+tbody tr{border-bottom:1px solid var(--rim);transition:background 0.12s}
+tbody tr:last-child{border-bottom:none}
+tbody tr:hover{background:var(--s2)}
+tbody td{padding:9px 10px;color:var(--ink2);font-family:var(--mono);font-size:11px;vertical-align:middle}
+td.id{color:var(--ink3);width:80px}
+td.q{color:var(--ink);font-family:var(--sans);font-size:12px;max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+td.lat{text-align:right;color:var(--ey)}
+td.cnt{text-align:right}
+td.ts{color:var(--ink3);white-space:nowrap}
+.pill{
+  display:inline-block;padding:1px 6px;border-radius:2px;
+  font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;
+}
+.pill.v{background:var(--pass-dim);color:var(--pass-hi)}
+.pill.u{background:var(--warn-dim);color:var(--warn-hi)}
+.pill.b{background:var(--fail-dim);color:var(--fail-hi)}
+.pill.e{background:var(--fail-dim);color:var(--fail-hi)}
+.num-v{color:var(--pass-hi);font-weight:700}
+.num-u{color:var(--warn-hi);font-weight:700}
+.num-b{color:var(--fail-hi);font-weight:700}
+
+/* ══ ERROR LOG ═════════════════════════════════════════════════════ */
+.err-list{display:flex;flex-direction:column;gap:6px}
+.err-row{
+  background:var(--fail-dim);border:1px solid rgba(214,64,69,0.14);
+  border-left:3px solid var(--fail);border-radius:var(--r);
+  padding:10px 14px;display:flex;gap:12px;align-items:flex-start;
+}
+.err-meta{display:flex;flex-direction:column;gap:2px;flex-shrink:0;min-width:100px}
+.err-stage{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--fail-hi)}
+.err-ts{font-family:var(--mono);font-size:10px;color:var(--ink3)}
+.err-detail{font-family:var(--mono);font-size:11px;color:var(--ink2);word-break:break-all}
+.err-q{font-size:11px;color:var(--ink3);font-style:italic;margin-top:2px}
+
+/* ══ EMPTY ═════════════════════════════════════════════════════════ */
+.empty-msg{
+  font-family:var(--mono);font-size:11px;color:var(--ink3);
+  padding:20px 0;text-align:center;letter-spacing:0.04em;
+}
+
+/* ══ FOOTER ════════════════════════════════════════════════════════ */
+footer{
+  border-top:1px solid var(--rim);padding:16px 24px;
+  font-family:var(--mono);font-size:10px;color:var(--ink3);
+  display:flex;align-items:center;gap:16px;
+}
+.ft-sep{width:1px;height:10px;background:var(--rim)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-badge">FS</div>
+    <div class="logo-name">Fin<span>Sight</span></div>
+  </div>
+  <div class="hdr-sep"></div>
+  <div class="hdr-sub">Production Metrics</div>
+  <div class="hdr-end">
+    <a href="/ui" class="nav-pill">← Analysis</a>
+    <div class="refresh-ring" title="Auto-refreshes every 5 seconds">
+      <svg viewBox="0 0 22 22">
+        <circle class="refresh-ring-bg" cx="11" cy="11" r="8"/>
+        <circle class="refresh-ring-arc" id="ring-arc" cx="11" cy="11" r="8"
+          stroke-dasharray="50.3" stroke-dashoffset="0"/>
+      </svg>
+    </div>
+    <div class="refresh-lbl" id="rcd">5s</div>
+    <div class="live-dot" id="ldot"></div>
+    <div class="live-txt" id="ltxt">Live</div>
+  </div>
+</header>
+
+<div class="page" id="page">
+
+  <!-- KPI tiles -->
+  <div class="sec"><span class="sec-lbl">Overview</span><div class="sec-line"></div></div>
+  <div class="kpi-grid">
+    <div class="kpi accent">
+      <div class="kpi-val" id="k-total">—</div>
+      <div class="kpi-key">Total Queries</div>
+      <div class="kpi-sub" id="k-inflight">— in-flight</div>
+    </div>
+    <div class="kpi neu">
+      <div class="kpi-val" id="k-avg">—</div>
+      <div class="kpi-key">Avg Latency</div>
+      <div class="kpi-sub">end-to-end ms</div>
+    </div>
+    <div class="kpi neu">
+      <div class="kpi-val" id="k-p95">—</div>
+      <div class="kpi-key">P95 Latency</div>
+      <div class="kpi-sub">95th percentile</div>
+    </div>
+    <div class="kpi b">
+      <div class="kpi-val" id="k-err">—</div>
+      <div class="kpi-key">Error Rate</div>
+      <div class="kpi-sub" id="k-errtotal">— total errors</div>
+    </div>
+    <div class="kpi v">
+      <div class="kpi-val" id="k-vrate">—</div>
+      <div class="kpi-key">Verified Rate</div>
+      <div class="kpi-sub" id="k-vtotal">— verified claims</div>
+    </div>
+    <div class="kpi neu">
+      <div class="kpi-val" id="k-uptime">—</div>
+      <div class="kpi-key">Uptime</div>
+      <div class="kpi-sub">since server start</div>
+    </div>
+  </div>
+
+  <!-- Charts row -->
+  <div class="sec" style="margin-top:28px"><span class="sec-lbl">Latency &amp; Claims</span><div class="sec-line"></div></div>
+  <div class="chart-grid">
+
+    <!-- Latency histogram -->
+    <div class="card">
+      <div class="card-title">
+        Latency Distribution
+        <span class="card-badge" id="hist-badge">0 queries</span>
+      </div>
+      <div class="hist" id="hist"></div>
+    </div>
+
+    <!-- Claim outcomes donut -->
+    <div class="card">
+      <div class="card-title">
+        Claim Outcomes
+        <span class="card-badge" id="donut-badge">0 claims</span>
+      </div>
+      <div class="donut-wrap">
+        <svg class="donut-svg" viewBox="0 0 100 100" width="120" height="120" id="donut-svg">
+          <circle cx="50" cy="50" r="36" fill="none" stroke="#222" stroke-width="16"/>
+          <circle id="d-pass" cx="50" cy="50" r="36" fill="none" stroke="#21A366" stroke-width="16"
+            stroke-dasharray="0 226.2" stroke-linecap="butt" transform="rotate(-90 50 50)"/>
+          <circle id="d-warn" cx="50" cy="50" r="36" fill="none" stroke="#D4750A" stroke-width="16"
+            stroke-dasharray="0 226.2" stroke-linecap="butt" transform="rotate(-90 50 50)"/>
+          <circle id="d-fail" cx="50" cy="50" r="36" fill="none" stroke="#D64045" stroke-width="16"
+            stroke-dasharray="0 226.2" stroke-linecap="butt" transform="rotate(-90 50 50)"/>
+          <text x="50" y="46" text-anchor="middle" style="font-family:monospace;font-size:11px;font-weight:700;fill:#fff" id="d-center-val">—</text>
+          <text x="50" y="57" text-anchor="middle" style="font-family:monospace;font-size:7px;fill:#555">CLAIMS</text>
+        </svg>
+        <div class="donut-legend">
+          <div class="dl-row">
+            <div class="dl-swatch" style="background:var(--pass)"></div>
+            <div class="dl-lbl">Verified</div>
+            <div class="dl-val" id="dl-v">—</div>
+            <div class="dl-pct" id="dl-vp"></div>
+          </div>
+          <div class="dl-row">
+            <div class="dl-swatch" style="background:var(--warn)"></div>
+            <div class="dl-lbl">Uncertain</div>
+            <div class="dl-val" id="dl-u">—</div>
+            <div class="dl-pct" id="dl-up"></div>
+          </div>
+          <div class="dl-row">
+            <div class="dl-swatch" style="background:var(--fail)"></div>
+            <div class="dl-lbl">Blocked</div>
+            <div class="dl-val" id="dl-b">—</div>
+            <div class="dl-pct" id="dl-bp"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Latency percentiles + agent breakdown -->
+  <div class="chart-grid" style="margin-top:16px">
+
+    <div class="card">
+      <div class="card-title">Latency Percentiles</div>
+      <div class="perc-grid" id="perc-grid">
+        <div class="perc-item"><div class="perc-val" id="perc-avg">—</div><div class="perc-lbl">Avg</div></div>
+        <div class="perc-item"><div class="perc-val" id="perc-p50">—</div><div class="perc-lbl">P50</div></div>
+        <div class="perc-item"><div class="perc-val" id="perc-p95">—</div><div class="perc-lbl">P95</div></div>
+        <div class="perc-item" style="margin-top:14px"><div class="perc-val" style="font-size:18px;color:var(--ink2)" id="perc-min">—</div><div class="perc-lbl">Min</div></div>
+        <div class="perc-item" style="margin-top:14px"><div class="perc-val" style="font-size:18px;color:var(--ink2)">—</div><div class="perc-lbl">—</div></div>
+        <div class="perc-item" style="margin-top:14px"><div class="perc-val" style="font-size:18px;color:var(--ink2)" id="perc-max">—</div><div class="perc-lbl">Max</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Agent Pipeline — Avg Latency</div>
+      <div class="agent-list" id="agent-list"></div>
+    </div>
+
+  </div>
+
+  <!-- Recent queries -->
+  <div class="sec"><span class="sec-lbl">Recent Queries</span><div class="sec-line"></div></div>
+  <div class="card" style="padding:0">
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Task ID</th>
+            <th>Query</th>
+            <th style="text-align:right">Latency</th>
+            <th style="text-align:right">V</th>
+            <th style="text-align:right">U</th>
+            <th style="text-align:right">B</th>
+            <th>Status</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody id="qtable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Errors -->
+  <div class="sec"><span class="sec-lbl">Recent Errors</span><div class="sec-line"></div></div>
+  <div id="errlist"></div>
+
+</div>
+
+<footer>
+  <span>FinSight</span>
+  <div class="ft-sep"></div>
+  <span id="ft-ts">—</span>
+  <div class="ft-sep"></div>
+  <span>Metrics refresh every 5 s</span>
+</footer>
+
+<script>
+const CIRC = 2 * Math.PI * 8;  // refresh ring circumference (r=8)
+const DONUT_C = 2 * Math.PI * 36;  // donut circumference (r=36)
+const REFRESH_S = 5;
+
+/* ── Countdown ring ───────────────────────────────────────────────── */
+let countdown = REFRESH_S;
+const arc = document.getElementById('ring-arc');
+const rcd = document.getElementById('rcd');
+
+function tickRing() {
+  countdown--;
+  if (countdown <= 0) {
+    countdown = REFRESH_S;
+    fetchMetrics();
+  }
+  const offset = CIRC * (1 - countdown / REFRESH_S);
+  arc.setAttribute('stroke-dashoffset', String(offset));
+  rcd.textContent = countdown + 's';
+}
+setInterval(tickRing, 1000);
+
+/* ── Fetch ────────────────────────────────────────────────────────── */
+async function fetchMetrics() {
+  const dot = document.getElementById('ldot');
+  const ltxt = document.getElementById('ltxt');
+  try {
+    const r = await fetch('/metrics/json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    dot.className = 'live-dot';
+    ltxt.textContent = 'Live';
+    render(d);
+  } catch (e) {
+    dot.className = 'live-dot err';
+    ltxt.textContent = 'Offline';
+  }
+}
+
+/* ── Helpers ──────────────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+const fmt = n => n >= 1000 ? (n/1000).toFixed(1) + 's' : n + 'ms';
+const pct = v => (v * 100).toFixed(1) + '%';
+const fmtUptime = s => {
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm ' + (s%60) + 's';
+  return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
+};
+const timeAgo = ts => {
+  const d = Date.now()/1000 - ts;
+  if (d < 60) return Math.round(d) + 's ago';
+  if (d < 3600) return Math.round(d/60) + 'm ago';
+  return new Date(ts*1000).toTimeString().slice(0,8);
+};
+
+/* ── Render ───────────────────────────────────────────────────────── */
+function render(d) {
+  const lat = d.latency || {};
+  const claims = d.claims || {};
+  const agents = d.agents || {};
+
+  // KPI tiles
+  $('k-total').textContent = d.total_queries;
+  $('k-inflight').textContent = d.inflight + ' in-flight';
+  $('k-avg').textContent = fmt(lat.avg_ms || 0);
+  $('k-p95').textContent = fmt(lat.p95_ms || 0);
+  $('k-err').textContent = pct(d.error_rate || 0);
+  $('k-errtotal').textContent = (d.total_errors || 0) + ' total errors';
+  $('k-vrate').textContent = pct(claims.verified_rate || 0);
+  $('k-vtotal').textContent = (claims.verified || 0) + ' verified';
+  $('k-uptime').textContent = fmtUptime(d.uptime_s || 0);
+
+  // Latency percentiles
+  $('perc-avg').textContent = fmt(lat.avg_ms || 0);
+  $('perc-p50').textContent = fmt(lat.p50_ms || 0);
+  $('perc-p95').textContent = fmt(lat.p95_ms || 0);
+  $('perc-min').textContent = fmt(lat.min_ms || 0);
+  $('perc-max').textContent = fmt(lat.max_ms || 0);
+
+  // Histogram
+  const buckets = lat.buckets || [];
+  const maxCount = Math.max(...buckets.map(b => b.count), 1);
+  $('hist-badge').textContent = d.total_queries + ' queries';
+  $('hist').innerHTML = buckets.map(b => {
+    const w = (b.count / maxCount * 100).toFixed(1);
+    return `<div class="hist-row">
+      <div class="hist-lbl">${b.label}</div>
+      <div class="hist-track"><div class="hist-bar" style="width:${w}%"></div></div>
+      <div class="hist-cnt">${b.count}</div>
+    </div>`;
+  }).join('');
+
+  // Donut
+  const total = claims.total || 0;
+  const vN = claims.verified || 0;
+  const uN = claims.uncertain || 0;
+  const bN = claims.blocked || 0;
+  $('donut-badge').textContent = total + ' claims';
+  $('d-center-val').textContent = total;
+  $('dl-v').textContent = vN;
+  $('dl-u').textContent = uN;
+  $('dl-b').textContent = bN;
+  $('dl-vp').textContent = total ? pct(vN/total) : '';
+  $('dl-up').textContent = total ? pct(uN/total) : '';
+  $('dl-bp').textContent = total ? pct(bN/total) : '';
+
+  // Draw three arcs (stacked via offset trick)
+  const vLen = total ? (vN / total) * DONUT_C : 0;
+  const uLen = total ? (uN / total) * DONUT_C : 0;
+  const bLen = total ? (bN / total) * DONUT_C : 0;
+  // pass arc starts at -90° (rotate already applied)
+  setArc('d-pass', vLen, 0);
+  setArc('d-warn', uLen, vLen);
+  setArc('d-fail', bLen, vLen + uLen);
+
+  // Agent bars
+  const agentOrder = ['PlannerAgent','RetrieverAgent','AnalystAgent','AuditorAgent','ComparatorAgent','SynthesizerAgent'];
+  const maxAgentMs = Math.max(...agentOrder.map(n => (agents[n] || {}).avg_ms || 0), 1);
+  $('agent-list').innerHTML = agentOrder.map(name => {
+    const a = agents[name] || {};
+    const ms = a.avg_ms || 0;
+    const w = (ms / maxAgentMs * 100).toFixed(1);
+    const shortName = name.replace('Agent', '');
+    return `<div class="agent-row">
+      <div class="agent-nm">${shortName}</div>
+      <div class="agent-track"><div class="agent-bar" style="width:${w}%"></div></div>
+      <div class="agent-ms">${ms ? fmt(ms) : '—'}</div>
+    </div>`;
+  }).join('');
+
+  // Recent queries
+  const rows = d.recent_queries || [];
+  if (!rows.length) {
+    $('qtable').innerHTML = '<tr><td colspan="8" class="empty-msg">No queries yet</td></tr>';
+  } else {
+    $('qtable').innerHTML = rows.map(r => {
+      if (r.error) {
+        return `<tr>
+          <td class="id">${r.task_id}</td>
+          <td class="q" style="color:var(--ink2)">${esc(r.query)}</td>
+          <td class="lat">—</td>
+          <td class="cnt">—</td><td class="cnt">—</td><td class="cnt">—</td>
+          <td><span class="pill e">Error</span></td>
+          <td class="ts">${timeAgo(r.ts)}</td>
+        </tr>`;
+      }
+      return `<tr>
+        <td class="id">${r.task_id}</td>
+        <td class="q">${esc(r.query)}</td>
+        <td class="lat">${fmt(r.latency_ms)}</td>
+        <td class="cnt"><span class="num-v">${r.verified}</span></td>
+        <td class="cnt"><span class="num-u">${r.uncertain}</span></td>
+        <td class="cnt"><span class="num-b">${r.blocked}</span></td>
+        <td><span class="pill v">OK</span></td>
+        <td class="ts">${timeAgo(r.ts)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Errors
+  const errs = d.recent_errors || [];
+  if (!errs.length) {
+    $('errlist').innerHTML = '<div class="empty-msg">No errors recorded</div>';
+  } else {
+    $('errlist').innerHTML = '<div class="err-list">' + errs.map(e =>
+      `<div class="err-row">
+        <div class="err-meta">
+          <div class="err-stage">${esc(e.stage || '?')}</div>
+          <div class="err-ts">${timeAgo(e.ts)}</div>
+        </div>
+        <div>
+          <div class="err-detail">${esc(e.detail || '')}</div>
+          <div class="err-q">${esc(e.query || '')}</div>
+        </div>
+      </div>`
+    ).join('') + '</div>';
+  }
+
+  $('ft-ts').textContent = 'Last updated ' + new Date().toTimeString().slice(0,8);
+}
+
+/* ── Donut arc helper ─────────────────────────────────────────────── */
+function setArc(id, len, offsetLen) {
+  const el = document.getElementById(id);
+  const gap = DONUT_C - len;
+  el.setAttribute('stroke-dasharray', len.toFixed(2) + ' ' + gap.toFixed(2));
+  // Rotate by offset angle: offset radians = (offsetLen / DONUT_C) * 2π → degrees
+  const deg = (offsetLen / DONUT_C) * 360 - 90;
+  el.setAttribute('transform', `rotate(${deg.toFixed(2)} 50 50)`);
+}
+
+/* ── Escape ───────────────────────────────────────────────────────── */
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* ── Boot ─────────────────────────────────────────────────────────── */
+fetchMetrics();
+</script>
+</body>
+</html>
