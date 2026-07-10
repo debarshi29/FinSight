@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections import Counter
 
+from core.config import settings
 from core.models import Chunk
 from ingestion.metadata import detect_company, detect_fiscal_year, detect_section_type
 
@@ -40,9 +41,11 @@ def chunk_document(
     pages: list[dict],
     doc_id: str,
     source: str,
-    target_tokens: int = 400,
-    overlap_tokens: int = 80,
+    target_tokens: int | None = None,
+    overlap_tokens: int | None = None,
 ) -> list[Chunk]:
+    target_tokens = target_tokens if target_tokens is not None else settings.chunk_size
+    overlap_tokens = overlap_tokens if overlap_tokens is not None else settings.chunk_overlap
     company = detect_company(source)
     all_text = " ".join(
         _block_text(b) for p in pages for b in p.get("blocks", []) if b["type"] == 0
