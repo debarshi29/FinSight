@@ -80,14 +80,22 @@ async def retrieve_chunks(
         log.warning("retriever.empty_collection")
         return []
 
-    # For BM25, filter payloads in-memory to match Qdrant filter semantics
+    # For BM25, filter payloads in-memory to match Qdrant filter semantics.
+    # fiscal_year stored as bare year ("2024") but callers may pass "FY2024" —
+    # use substring containment so both directions resolve.
+    def _payload_matches(payload: dict, filters: dict[str, str]) -> bool:
+        for k, v in filters.items():
+            if not v:
+                continue
+            stored = payload.get(k, "").lower()
+            needle = v.lower().lstrip("fy").strip()  # "FY2024" -> "2024"
+            if needle not in stored and v.lower() not in stored:
+                return False
+        return True
+
     bm25_payloads = all_payloads
     if filters:
-        bm25_payloads = [
-            p
-            for p in all_payloads
-            if all(p.get(k, "").lower() == v.lower() for k, v in filters.items() if v)
-        ]
+        bm25_payloads = [p for p in all_payloads if _payload_matches(p, filters)]
         if not bm25_payloads:
             log.warning("retriever.filter_no_match", filters=filters)
             return []
@@ -95,9 +103,12 @@ async def retrieve_chunks(
     bm25 = BM25Retriever(bm25_payloads)
     query_vec = embed_query(query)
 
+    # Pass only company to Qdrant (exact field match); fiscal_year filtering
+    # already handled by BM25 payload pre-filtering above.
+    dense_filters = {k: v for k, v in (filters or {}).items() if k == "company" and v}
     bm25_results, dense_results = await asyncio.gather(
         asyncio.to_thread(bm25.search, query, top_k),
-        store.dense_search(query_vec, top_k, filters=filters),
+        store.dense_search(query_vec, top_k, filters=dense_filters or None),
     )
 
     fused = reciprocal_rank_fusion([bm25_results, dense_results])
