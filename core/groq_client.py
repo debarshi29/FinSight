@@ -55,8 +55,18 @@ async def chat_completion(
     max_tokens: int = 2048,
     response_format: dict | None = None,
 ) -> str:
-    primary_client = get_groq_async_client()
-    primary_model = model or settings.groq_model
+    # Use the fallback endpoint as primary if configured; Groq is the reserve.
+    fallback_client = _get_fallback_client()
+    if fallback_client and settings.fallback_model:
+        primary_client = fallback_client
+        primary_model = settings.fallback_model
+        reserve_client: openai.AsyncOpenAI | None = get_groq_async_client()
+        reserve_model: str = settings.groq_model
+    else:
+        primary_client = get_groq_async_client()
+        primary_model = settings.groq_model
+        reserve_client = None
+        reserve_model = ""
 
     last_exc: Exception | None = None
     for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
@@ -75,21 +85,15 @@ async def chat_completion(
             else:
                 raise
 
-    # Primary exhausted — try fallback if configured
-    fallback_client = _get_fallback_client()
-    if fallback_client and settings.fallback_model:
-        _log.warning("llm.using_fallback reason=%s", str(last_exc)[:120])
+    # Primary exhausted — try reserve
+    if reserve_client:
+        _log.warning("llm.using_reserve reason=%s", str(last_exc)[:120])
         try:
             return await _call(
-                fallback_client,
-                settings.fallback_model,
-                messages,
-                temperature,
-                max_tokens,
-                response_format,
+                reserve_client, reserve_model, messages, temperature, max_tokens, response_format
             )
         except Exception as exc:
-            _log.error("llm.fallback_failed error=%s", str(exc)[:120])
-            raise RuntimeError("Both primary and fallback LLM failed") from exc
+            _log.error("llm.reserve_failed error=%s", str(exc)[:120])
+            raise RuntimeError("Both LLM endpoints failed") from exc
 
-    raise RuntimeError(f"Primary LLM failed after {len(_RETRY_DELAYS) + 1} attempts") from last_exc
+    raise RuntimeError(f"LLM failed after {len(_RETRY_DELAYS) + 1} attempts") from last_exc

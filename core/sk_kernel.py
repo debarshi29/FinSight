@@ -61,8 +61,8 @@ def get_kernel() -> sk.Kernel:
 
 
 def get_fallback_kernel() -> sk.Kernel | None:
-    """Return a kernel wired to the fallback LLM, or None if not configured."""
-    if not (settings.fallback_api_key and settings.fallback_model and settings.fallback_base_url):
+    """Return a reserve kernel (Groq) for when the primary endpoint fails."""
+    if not settings.groq_api_key:
         return None
     global _fallback_kernel
     if _fallback_kernel is None:
@@ -79,7 +79,15 @@ def reset_kernel() -> None:
 def _build_kernel(use_fallback: bool = False) -> sk.Kernel:
     kernel = sk.Kernel()
 
+    # When use_fallback=False we still prefer the fallback endpoint as primary
+    # if it is configured; Groq becomes the reserve kernel (use_fallback=True).
     if use_fallback:
+        client = openai.AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url=settings.groq_base_url,
+        )
+        model = settings.groq_model
+    elif settings.fallback_api_key and settings.fallback_model and settings.fallback_base_url:
         client = openai.AsyncOpenAI(
             api_key=settings.fallback_api_key,
             base_url=settings.fallback_base_url,
