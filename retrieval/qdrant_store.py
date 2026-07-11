@@ -59,14 +59,14 @@ class QdrantStore:
             ]
             qdrant_filter = Filter(must=conditions)
 
-        results = await self._client.search(
+        response = await self._client.query_points(
             collection_name=self._collection,
-            query_vector=query_vector,
+            query=query_vector,
             limit=top_k,
             query_filter=qdrant_filter,
             with_payload=True,
         )
-        return [{"score": r.score, "payload": r.payload} for r in results]
+        return [{"score": r.score, "payload": r.payload} for r in response.points]
 
     async def scroll_all(self, batch_size: int = 100) -> list[dict[str, Any]]:
         all_payloads = []
@@ -97,7 +97,7 @@ class QdrantStore:
         info = await self._client.get_collection(self._collection)
         return {
             "name": self._collection,
-            "vectors_count": info.vectors_count,
+            "vectors_count": getattr(info, "vectors_count", None) or info.points_count,
             "points_count": info.points_count,
             "status": str(info.status),
         }
