@@ -12,8 +12,9 @@ from semantic_kernel.functions import KernelArguments
 from agents.synthesizer import synthesize_report
 from api.metrics_store import metrics
 from core.config import settings
+from core.groq_client import chat_completion
 from core.models import AnalysisReport, AuditLog
-from core.sk_kernel import get_fallback_kernel, get_kernel
+from core.sk_kernel import PLANNER_PROMPT, get_kernel
 
 from .query import (
     QueryRequest,
@@ -37,40 +38,27 @@ async def run_query_stream(req: QueryRequest):
         task_id = str(uuid.uuid4())
         start_ms = time.time()
         kernel = get_kernel()
-        fallback_kernel = get_fallback_kernel()
         agents_invoked: list[str] = []
 
         metrics.record_start()
         log.info("stream.start", task_id=task_id[:8], query=req.query[:80])
         yield _event("start", {"task_id": task_id, "query": req.query})
 
-        # ── PlannerAgent ────────────────────────────────────────────────────
+        # ── PlannerAgent — direct LLM call, no SK tool injection ────────────
         agents_invoked.append("PlannerAgent")
         _t = time.time()
         try:
-            plan_result = await kernel.invoke(
-                plugin_name="Planner",
-                function_name="decompose",
-                arguments=KernelArguments(user_task=req.query),
+            plan_text = await chat_completion(
+                messages=[{"role": "user", "content": PLANNER_PROMPT.format(user_task=req.query)}],
+                max_tokens=500,
+                temperature=0.0,
             )
         except Exception as exc:
-            if fallback_kernel:
-                try:
-                    plan_result = await fallback_kernel.invoke(
-                        plugin_name="Planner",
-                        function_name="decompose",
-                        arguments=KernelArguments(user_task=req.query),
-                    )
-                except Exception as exc2:
-                    metrics.record_error(task_id, req.query, "PlannerAgent", str(exc2))
-                    yield _event("error", {"stage": "PlannerAgent", "detail": str(exc2)})
-                    return
-            else:
-                metrics.record_error(task_id, req.query, "PlannerAgent", str(exc))
-                yield _event("error", {"stage": "PlannerAgent", "detail": str(exc)})
-                return
+            metrics.record_error(task_id, req.query, "PlannerAgent", str(exc))
+            yield _event("error", {"stage": "PlannerAgent", "detail": str(exc)})
+            return
         metrics.record_agent_latency("PlannerAgent", int((time.time() - _t) * 1000))
-        subtasks = _parse_subtasks(str(plan_result), req.query)
+        subtasks = _parse_subtasks(plan_text, req.query)
         log.info("stream.planned", task_id=task_id[:8], subtasks=len(subtasks))
         yield _event("planned", {"subtasks": subtasks})
 
@@ -193,26 +181,16 @@ async def run_query_stream(req: QueryRequest):
 
         yield _event("compared", {"deltas": len(comparison.get("deltas", []))})
 
-        # ── SynthesizerAgent ─────────────────────────────────────────────────
+        # ── SynthesizerAgent — direct LLM call, no SK tool injection ─────────
         log.info("stream.synthesizer_start", task_id=task_id[:8])
         agents_invoked.append("SynthesizerAgent")
         _t = time.time()
         try:
             summary = await synthesize_report(req.query, verified, uncertain, comparison, task_id)
         except Exception as exc:
-            if fallback_kernel:
-                try:
-                    summary = await synthesize_report(
-                        req.query, verified, uncertain, comparison, task_id, kernel=fallback_kernel
-                    )
-                except Exception as exc2:
-                    metrics.record_error(task_id, req.query, "SynthesizerAgent", str(exc2))
-                    yield _event("error", {"stage": "SynthesizerAgent", "detail": str(exc2)})
-                    return
-            else:
-                metrics.record_error(task_id, req.query, "SynthesizerAgent", str(exc))
-                yield _event("error", {"stage": "SynthesizerAgent", "detail": str(exc)})
-                return
+            metrics.record_error(task_id, req.query, "SynthesizerAgent", str(exc))
+            yield _event("error", {"stage": "SynthesizerAgent", "detail": str(exc)})
+            return
         metrics.record_agent_latency("SynthesizerAgent", int((time.time() - _t) * 1000))
         log.info("stream.synthesizer_done", task_id=task_id[:8])
 

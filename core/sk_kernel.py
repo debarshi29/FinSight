@@ -12,7 +12,7 @@ from core.config import settings
 # manages prompt rendering, LLM dispatch, and result wrapping — not raw
 # chat_completion calls.
 
-_PLANNER_PROMPT = """You are a financial analysis planning agent.
+PLANNER_PROMPT = """You are a financial analysis planning agent.
 Decompose the user task into an ordered list of 2-6 specific retrieval subtasks.
 Each subtask must be a precise, searchable query targeting a specific financial
 metric, time period, or company.
@@ -25,22 +25,22 @@ Output: ["Infosys operating margin FY2022", "Infosys operating margin FY2023",
 "Infosys operating margin FY2024", "TCS operating margin FY2022",
 "TCS operating margin FY2023", "TCS operating margin FY2024"]
 
-User Task: {{$user_task}}"""
+User Task: {user_task}"""
 
-_SYNTHESIZER_PROMPT = """You are a financial report writer.
+SYNTHESIZER_PROMPT = """You are a financial report writer.
 Assemble a structured, professional analysis report from the evidence below.
 
-Query: {{$query}}
-Task ID: {{$task_id}}
+Query: {query}
+Task ID: {task_id}
 
 Verified Claims (include unmarked):
-{{$verified_claims}}
+{verified_claims}
 
 Uncertain Claims (prefix each with [UNCERTAIN]):
-{{$uncertain_claims}}
+{uncertain_claims}
 
 Comparative Analysis:
-{{$comparison}}
+{comparison}
 
 Rules:
 - Do NOT include any claim absent from the lists above
@@ -48,6 +48,10 @@ Rules:
 - Structure: Executive Summary → Key Findings → Comparative Analysis → Risk Flags
 - Write in clear, professional financial analyst prose
 - Output plain text, not JSON"""
+
+# Legacy SK template aliases kept so nothing importing the old names breaks
+_PLANNER_PROMPT = PLANNER_PROMPT
+_SYNTHESIZER_PROMPT = SYNTHESIZER_PROMPT
 
 _kernel: sk.Kernel | None = None
 _fallback_kernel: sk.Kernel | None = None

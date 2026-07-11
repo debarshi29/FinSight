@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import semantic_kernel as sk
 import structlog
-from semantic_kernel.functions import KernelArguments
 
+from core.groq_client import chat_completion
 from core.models import AuditedClaim
-from core.sk_kernel import get_kernel
+from core.sk_kernel import SYNTHESIZER_PROMPT
 
 log = structlog.get_logger()
 
@@ -19,18 +18,12 @@ async def synthesize_report(
     uncertain_claims: list[AuditedClaim],
     comparison: dict[str, Any],
     task_id: str,
-    kernel: sk.Kernel | None = None,
 ) -> str:
     """
-    SynthesizerAgent: invokes the Synthesizer.synthesize SK semantic function.
+    SynthesizerAgent: direct LLM call with the synthesizer prompt.
 
-    Per the spec, the Synthesizer is a semantic function — a prompt template
-    registered to the kernel via KernelFunctionFromPrompt. The kernel fills in
-    {{$verified_claims}}, {{$uncertain_claims}}, {{$comparison}}, {{$query}},
-    and {{$task_id}} from KernelArguments before dispatching to Groq.
-
-    Only verified and uncertain claims reach this function — unverifiable claims
-    are blocked at the AuditorAgent before this call.
+    Uses chat_completion() so the request goes to the primary endpoint
+    with automatic fallback to the reserve — no SK tool-calling involved.
     """
     if not verified_claims and not uncertain_claims:
         return (
@@ -39,18 +32,16 @@ async def synthesize_report(
             "not present in the ingested documents."
         )
 
-    kernel = kernel or get_kernel()
-
-    result = await kernel.invoke(
-        plugin_name="Synthesizer",
-        function_name="synthesize",
-        arguments=KernelArguments(
-            query=query,
-            task_id=task_id,
-            verified_claims=json.dumps([c.to_dict() for c in verified_claims], indent=2)[:3000],
-            uncertain_claims=json.dumps([c.to_dict() for c in uncertain_claims], indent=2)[:1000],
-            comparison=json.dumps(comparison, indent=2)[:1500],
-        ),
+    prompt = SYNTHESIZER_PROMPT.format(
+        query=query,
+        task_id=task_id,
+        verified_claims=json.dumps([c.to_dict() for c in verified_claims], indent=2)[:3000],
+        uncertain_claims=json.dumps([c.to_dict() for c in uncertain_claims], indent=2)[:1000],
+        comparison=json.dumps(comparison, indent=2)[:1500],
     )
 
-    return str(result)
+    return await chat_completion(
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2048,
+        temperature=0.1,
+    )

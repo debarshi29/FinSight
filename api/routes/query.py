@@ -13,8 +13,9 @@ from semantic_kernel.functions import KernelArguments
 from agents.synthesizer import synthesize_report
 from api.metrics_store import metrics
 from core.config import settings
+from core.groq_client import chat_completion
 from core.models import AnalysisReport, AuditedClaim, AuditLog, AuditStatus, Citation
-from core.sk_kernel import get_fallback_kernel, get_kernel
+from core.sk_kernel import PLANNER_PROMPT, get_kernel
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/query", tags=["query"])
@@ -38,30 +39,18 @@ async def run_query(req: QueryRequest):
 
     metrics.record_start()
     kernel = get_kernel()
-    fallback_kernel = get_fallback_kernel()
     log.info("query.start", task_id=task_id, query=req.query[:100])
 
-    # ── PlannerAgent ─────────────────────────────────────────────────────────
+    # ── PlannerAgent — direct LLM call, no SK tool injection ─────────────────
     agents_invoked.append("PlannerAgent")
     _t = time.time()
-    try:
-        plan_result = await kernel.invoke(
-            plugin_name="Planner",
-            function_name="decompose",
-            arguments=KernelArguments(user_task=req.query),
-        )
-    except Exception:
-        if fallback_kernel:
-            log.warning("query.planner_fallback", task_id=task_id)
-            plan_result = await fallback_kernel.invoke(
-                plugin_name="Planner",
-                function_name="decompose",
-                arguments=KernelArguments(user_task=req.query),
-            )
-        else:
-            raise
+    plan_text = await chat_completion(
+        messages=[{"role": "user", "content": PLANNER_PROMPT.format(user_task=req.query)}],
+        max_tokens=500,
+        temperature=0.0,
+    )
     metrics.record_agent_latency("PlannerAgent", int((time.time() - _t) * 1000))
-    subtasks = _parse_subtasks(str(plan_result), req.query)
+    subtasks = _parse_subtasks(plan_text, req.query)
     log.info("planner.subtasks", count=len(subtasks), subtasks=subtasks)
 
     all_claims: list[dict] = []
@@ -149,19 +138,10 @@ async def run_query(req: QueryRequest):
     except json.JSONDecodeError:
         comparison = {"deltas": [], "cross_document_claims": [], "summary": ""}
 
-    # ── SynthesizerAgent ─────────────────────────────────────────────────────
+    # ── SynthesizerAgent — direct LLM call, no SK tool injection ─────────────
     agents_invoked.append("SynthesizerAgent")
     _t = time.time()
-    try:
-        summary = await synthesize_report(req.query, verified, uncertain, comparison, task_id)
-    except Exception:
-        if fallback_kernel:
-            log.warning("query.synthesizer_fallback", task_id=task_id)
-            summary = await synthesize_report(
-                req.query, verified, uncertain, comparison, task_id, kernel=fallback_kernel
-            )
-        else:
-            raise
+    summary = await synthesize_report(req.query, verified, uncertain, comparison, task_id)
     metrics.record_agent_latency("SynthesizerAgent", int((time.time() - _t) * 1000))
 
     latency_ms = int((time.time() - start_ms) * 1000)
