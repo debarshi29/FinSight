@@ -936,7 +936,7 @@ async function run() {
   EMPT.style.display = 'none';
   resetPipeline();
 
-  let rc = 0, ac = 0;
+  let rc = 0, ac = 0, doneReceived = false;
 
   try {
     const resp = await fetch('/query/stream', {
@@ -962,7 +962,11 @@ async function run() {
       buf = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
-        let ev; try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+        let ev;
+        try { ev = JSON.parse(line.slice(6)); } catch (parseErr) {
+          console.error('[FinSight] SSE parse error:', parseErr, 'line:', line.slice(0, 120));
+          continue;
+        }
         switch (ev.event) {
           case 'start':
             addLog('start', 'task ' + (ev.task_id||'').slice(0,8) + ' accepted');
@@ -1002,20 +1006,52 @@ async function run() {
             }, 250);
             break;
           case 'done':
+            doneReceived = true;
             addLog('done', 'synthesis complete');
             setTimeout(() => {
               setNode('synthesizer', 'done'); setConn(5, 'done');
               CN.forEach(c => { if (!c.classList.contains('done')) c.className = 'pc done'; });
             }, 200);
-            if (ev.result) render(ev.result);
+            if (ev.result) {
+              try {
+                render(ev.result);
+                document.getElementById('out').scrollTop = 0;
+              } catch (renderErr) {
+                console.error('[FinSight] render() failed:', renderErr);
+                /* Show summary as plain text fallback */
+                const summary = (ev.result && ev.result.summary) || '';
+                if (summary) {
+                  RES.innerHTML =
+                    '<div class="summary"><div class="summary-title">Synthesis</div>' +
+                    '<div class="summary-body">' + esc(summary) + '</div></div>';
+                  RES.style.display = 'block';
+                  document.getElementById('out').scrollTop = 0;
+                }
+                addLog('error', 'render failed: ' + renderErr.message);
+              }
+            } else {
+              console.warn('[FinSight] done event arrived but ev.result is empty');
+            }
             setStatus('Complete', false);
             break;
           case 'error':
             addLog('error', (ev.stage||'?') + ': ' + (ev.detail||'error'));
+            ERR.textContent = 'Agent error [' + (ev.stage||'?') + ']: ' + (ev.detail||'unknown') +
+              ' — check event log for details.';
+            ERR.classList.add('on');
+            RES.style.display = 'none';
             setStatus('Error', false);
             break;
         }
       }
+    }
+
+    /* Stream ended without a done event — show message */
+    if (!doneReceived) {
+      addLog('error', 'stream closed without result — check server logs');
+      ERR.textContent = 'Analysis stream ended without a result. The server may have encountered an error — check the event log and server output.';
+      ERR.classList.add('on');
+      setStatus('Error', false);
     }
   } catch (e) {
     addLog('error', e.message || 'connection failed');
