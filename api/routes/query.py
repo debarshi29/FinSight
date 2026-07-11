@@ -8,7 +8,7 @@ from pathlib import Path
 import structlog
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from semantic_kernel import KernelArguments
+from semantic_kernel.functions import KernelArguments
 
 from agents.synthesizer import synthesize_report
 from api.metrics_store import metrics

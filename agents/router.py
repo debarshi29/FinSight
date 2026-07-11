@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import structlog
-from semantic_kernel import KernelArguments
+from semantic_kernel.functions import KernelArguments
 
 from core.sk_kernel import get_kernel
 

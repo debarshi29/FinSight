@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 import structlog
-from semantic_kernel import KernelArguments
+from semantic_kernel.functions import KernelArguments
 
 from core.models import AuditedClaim
 from core.sk_kernel import get_kernel
