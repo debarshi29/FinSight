@@ -14,7 +14,7 @@ from agents.synthesizer import synthesize_report
 from api.metrics_store import metrics
 from core.config import settings
 from core.models import AnalysisReport, AuditedClaim, AuditLog, AuditStatus, Citation
-from core.sk_kernel import get_kernel
+from core.sk_kernel import get_fallback_kernel, get_kernel
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/query", tags=["query"])
@@ -38,17 +38,29 @@ async def run_query(req: QueryRequest):
 
     metrics.record_start()
     kernel = get_kernel()
+    fallback_kernel = get_fallback_kernel()
     log.info("query.start", task_id=task_id, query=req.query[:100])
 
     # ── PlannerAgent — SK semantic function ──────────────────────────────────
     # kernel.invoke renders the {{$user_task}} prompt template and dispatches
     # to Groq. The plan is dynamic: different queries produce different plans.
     agents_invoked.append("PlannerAgent")
-    plan_result = await kernel.invoke(
-        plugin_name="Planner",
-        function_name="decompose",
-        arguments=KernelArguments(user_task=req.query),
-    )
+    try:
+        plan_result = await kernel.invoke(
+            plugin_name="Planner",
+            function_name="decompose",
+            arguments=KernelArguments(user_task=req.query),
+        )
+    except Exception:
+        if fallback_kernel:
+            log.warning("query.planner_fallback", task_id=task_id)
+            plan_result = await fallback_kernel.invoke(
+                plugin_name="Planner",
+                function_name="decompose",
+                arguments=KernelArguments(user_task=req.query),
+            )
+        else:
+            raise
     subtasks = _parse_subtasks(str(plan_result), req.query)
     log.info("planner.subtasks", count=len(subtasks), subtasks=subtasks)
 
@@ -139,7 +151,16 @@ async def run_query(req: QueryRequest):
     # Assembles the final report from verified + uncertain claims only.
     # Internally calls kernel.invoke("Synthesizer", "synthesize", KernelArguments(...)).
     agents_invoked.append("SynthesizerAgent")
-    summary = await synthesize_report(req.query, verified, uncertain, comparison, task_id)
+    try:
+        summary = await synthesize_report(req.query, verified, uncertain, comparison, task_id)
+    except Exception:
+        if fallback_kernel:
+            log.warning("query.synthesizer_fallback", task_id=task_id)
+            summary = await synthesize_report(
+                req.query, verified, uncertain, comparison, task_id, kernel=fallback_kernel
+            )
+        else:
+            raise
 
     latency_ms = int((time.time() - start_ms) * 1000)
 

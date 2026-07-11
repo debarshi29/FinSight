@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     groq_base_url: str = "https://api.groq.com/openai/v1"
 
+    fallback_api_key: str = ""
+    fallback_model: str = ""
+    fallback_base_url: str = ""
+
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_collection: str = "finsight_chunks"

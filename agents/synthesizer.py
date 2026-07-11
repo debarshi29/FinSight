@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import semantic_kernel as sk
 import structlog
 from semantic_kernel.functions import KernelArguments
 
@@ -18,6 +19,7 @@ async def synthesize_report(
     uncertain_claims: list[AuditedClaim],
     comparison: dict[str, Any],
     task_id: str,
+    kernel: sk.Kernel | None = None,
 ) -> str:
     """
     SynthesizerAgent: invokes the Synthesizer.synthesize SK semantic function.
@@ -37,7 +39,7 @@ async def synthesize_report(
             "not present in the ingested documents."
         )
 
-    kernel = get_kernel()
+    kernel = kernel or get_kernel()
 
     result = await kernel.invoke(
         plugin_name="Synthesizer",

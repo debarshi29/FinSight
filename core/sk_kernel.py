@@ -50,6 +50,7 @@ Rules:
 - Output plain text, not JSON"""
 
 _kernel: sk.Kernel | None = None
+_fallback_kernel: sk.Kernel | None = None
 
 
 def get_kernel() -> sk.Kernel:
@@ -59,17 +60,41 @@ def get_kernel() -> sk.Kernel:
     return _kernel
 
 
-def _build_kernel() -> sk.Kernel:
+def get_fallback_kernel() -> sk.Kernel | None:
+    """Return a kernel wired to the fallback LLM, or None if not configured."""
+    if not (settings.fallback_api_key and settings.fallback_model and settings.fallback_base_url):
+        return None
+    global _fallback_kernel
+    if _fallback_kernel is None:
+        _fallback_kernel = _build_kernel(use_fallback=True)
+    return _fallback_kernel
+
+
+def reset_kernel() -> None:
+    global _kernel, _fallback_kernel
+    _kernel = None
+    _fallback_kernel = None
+
+
+def _build_kernel(use_fallback: bool = False) -> sk.Kernel:
     kernel = sk.Kernel()
 
-    # ── LLM service via Groq's OpenAI-compatible endpoint ────────────────────
-    async_client = openai.AsyncOpenAI(
-        api_key=settings.groq_api_key,
-        base_url=settings.groq_base_url,
-    )
+    if use_fallback:
+        client = openai.AsyncOpenAI(
+            api_key=settings.fallback_api_key,
+            base_url=settings.fallback_base_url,
+        )
+        model = settings.fallback_model
+    else:
+        client = openai.AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url=settings.groq_base_url,
+        )
+        model = settings.groq_model
+
     chat_service = OpenAIChatCompletion(
-        ai_model_id=settings.groq_model,
-        async_client=async_client,
+        ai_model_id=model,
+        async_client=client,
     )
     kernel.add_service(chat_service)
 
@@ -107,9 +132,3 @@ def _build_kernel() -> sk.Kernel:
     )
 
     return kernel
-
-
-def reset_kernel() -> None:
-    """Reset singleton — useful in tests and after config changes."""
-    global _kernel
-    _kernel = None
