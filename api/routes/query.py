@@ -235,6 +235,16 @@ def _parse_audit_result(
     return verified, uncertain, unverifiable
 
 
+def _safe_confidence(raw: object) -> float:
+    try:
+        v = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.5
+    if v != v or not (0.0 <= v <= 1.0):  # nan / out-of-range guard
+        return max(0.0, min(1.0, v)) if v == v else 0.5
+    return v
+
+
 def _deserialize_claims(raw: list[dict]) -> list[AuditedClaim]:
     result = []
     for item in raw:
@@ -242,10 +252,10 @@ def _deserialize_claims(raw: list[dict]) -> list[AuditedClaim]:
             cit = item.get("citation", {})
             citation = Citation(
                 document=cit.get("document", "unknown"),
-                page=cit.get("page", 0),
+                page=int(cit.get("page") or 0),
                 snippet=cit.get("snippet", ""),
                 claim=cit.get("claim", ""),
-                confidence=float(cit.get("confidence", 0.5)),
+                confidence=_safe_confidence(cit.get("confidence", 0.5)),
                 section_type=cit.get("section_type", "unknown"),
             )
             result.append(
@@ -256,7 +266,7 @@ def _deserialize_claims(raw: list[dict]) -> list[AuditedClaim]:
                     audit_reason=item.get("audit_reason", ""),
                 )
             )
-        except (KeyError, ValueError):
+        except Exception:
             continue
     return result
 

@@ -210,38 +210,42 @@ async def run_query_stream(req: QueryRequest):
 
         latency_ms = int((time.time() - start_ms) * 1000)
 
-        audit_log = AuditLog(
-            task_id=task_id,
-            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            user_query=req.query,
-            plan=subtasks,
-            retrievals=retrievals,
-            claims=[c.to_dict() for c in verified + uncertain],
-            flagged_uncertain=[c.claim for c in uncertain],
-            blocked_unverifiable=unverifiable_claims,
-            agents_invoked=list(dict.fromkeys(agents_invoked)),
-            latency_ms=latency_ms,
-        )
-        _save_audit_log(audit_log)
+        try:
+            audit_log = AuditLog(
+                task_id=task_id,
+                timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                user_query=req.query,
+                plan=subtasks,
+                retrievals=retrievals,
+                claims=[c.to_dict() for c in verified + uncertain],
+                flagged_uncertain=[c.claim for c in uncertain],
+                blocked_unverifiable=unverifiable_claims,
+                agents_invoked=list(dict.fromkeys(agents_invoked)),
+                latency_ms=latency_ms,
+            )
+            _save_audit_log(audit_log)
 
-        report = AnalysisReport(
-            task_id=task_id,
-            query=req.query,
-            summary=summary,
-            verified_claims=verified,
-            uncertain_claims=uncertain,
-            audit_log=audit_log,
-        )
+            report = AnalysisReport(
+                task_id=task_id,
+                query=req.query,
+                summary=summary,
+                verified_claims=verified,
+                uncertain_claims=uncertain,
+                audit_log=audit_log,
+            )
 
-        metrics.record_complete(
-            task_id=task_id,
-            query=req.query,
-            latency_ms=latency_ms,
-            verified=len(verified),
-            uncertain=len(uncertain),
-            blocked=len(unverifiable_claims),
-        )
-        yield _event("done", {"result": report.to_dict()})
+            metrics.record_complete(
+                task_id=task_id,
+                query=req.query,
+                latency_ms=latency_ms,
+                verified=len(verified),
+                uncertain=len(uncertain),
+                blocked=len(unverifiable_claims),
+            )
+            yield _event("done", {"result": report.to_dict()})
+        except Exception as exc:
+            log.exception("stream.done_failed", detail=str(exc))
+            yield _event("error", {"stage": "finalize", "detail": str(exc)[:300]})
 
     return StreamingResponse(
         generate(),
