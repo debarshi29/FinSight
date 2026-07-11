@@ -7,7 +7,7 @@ import structlog
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.middleware.guardrails import guardrails_middleware
@@ -62,6 +62,10 @@ def create_app() -> FastAPI:
             @app.get("/dashboard", include_in_schema=False)
             async def dashboard():
                 return FileResponse(str(dashboard_file))
+
+    @app.get("/", include_in_schema=False)
+    async def root():
+        return RedirectResponse(url="/ui")
 
     @app.get("/health")
     async def health():
