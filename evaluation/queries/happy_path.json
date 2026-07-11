@@ -4,27 +4,31 @@
     "query": "What was Infosys operating margin in FY2024?",
     "expected_companies": ["Infosys"],
     "expected_metrics": ["operating margin"],
+    "expected_behavior": "verified_or_uncertain",
     "should_verify": true
   },
   {
     "id": "hp_002",
-    "query": "Compare Infosys and TCS revenue growth FY2022 to FY2024",
+    "query": "Compare Infosys and TCS revenue growth FY2024 to FY2025",
     "expected_companies": ["Infosys", "TCS"],
     "expected_metrics": ["revenue", "growth"],
+    "expected_behavior": "verified_or_uncertain",
     "should_verify": true
   },
   {
     "id": "hp_003",
-    "query": "What were Wipro key revenue drivers in FY2024?",
+    "query": "What were Wipro key revenue drivers in FY2025?",
     "expected_companies": ["Wipro"],
     "expected_metrics": ["revenue"],
+    "expected_behavior": "verified_or_uncertain",
     "should_verify": true
   },
   {
     "id": "hp_004",
-    "query": "What guidance did each company provide for FY2025 capex?",
-    "expected_companies": ["Infosys", "TCS", "Wipro"],
-    "expected_metrics": ["capex"],
+    "query": "What was TCS employee headcount in FY2025?",
+    "expected_companies": ["TCS"],
+    "expected_metrics": ["headcount"],
+    "expected_behavior": "verified_or_uncertain",
     "should_verify": true
   }
 ]

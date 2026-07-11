@@ -41,10 +41,9 @@ async def run_query(req: QueryRequest):
     fallback_kernel = get_fallback_kernel()
     log.info("query.start", task_id=task_id, query=req.query[:100])
 
-    # ── PlannerAgent — SK semantic function ──────────────────────────────────
-    # kernel.invoke renders the {{$user_task}} prompt template and dispatches
-    # to Groq. The plan is dynamic: different queries produce different plans.
+    # ── PlannerAgent ─────────────────────────────────────────────────────────
     agents_invoked.append("PlannerAgent")
+    _t = time.time()
     try:
         plan_result = await kernel.invoke(
             plugin_name="Planner",
@@ -61,6 +60,7 @@ async def run_query(req: QueryRequest):
             )
         else:
             raise
+    metrics.record_agent_latency("PlannerAgent", int((time.time() - _t) * 1000))
     subtasks = _parse_subtasks(str(plan_result), req.query)
     log.info("planner.subtasks", count=len(subtasks), subtasks=subtasks)
 
@@ -69,9 +69,9 @@ async def run_query(req: QueryRequest):
     retrievals: dict[str, list[str]] = {}
 
     for subtask in subtasks:
-        # ── RetrieverAgent — SK native plugin ────────────────────────────────
-        # KernelArguments carries the subtask + optional scope filters forward.
+        # ── RetrieverAgent ───────────────────────────────────────────────────
         agents_invoked.append("RetrieverAgent")
+        _t = time.time()
         retrieve_result = await kernel.invoke(
             plugin_name="Retriever",
             function_name="retrieve",
@@ -81,6 +81,7 @@ async def run_query(req: QueryRequest):
                 fiscal_year_filter=req.fiscal_year_filter or "",
             ),
         )
+        metrics.record_agent_latency("RetrieverAgent", int((time.time() - _t) * 1000))
         chunks_json = str(retrieve_result)
 
         try:
@@ -93,15 +94,15 @@ async def run_query(req: QueryRequest):
 
         retrievals[subtask] = [c.get("chunk_id", "") for c in chunks_data]
 
-        # ── AnalystAgent — SK native plugin ──────────────────────────────────
-        # chunks_json threads forward as a KernelArgument — citations are
-        # embedded in the JSON string and survive the hop intact.
+        # ── AnalystAgent ─────────────────────────────────────────────────────
         agents_invoked.append("AnalystAgent")
+        _t = time.time()
         analysis_result = await kernel.invoke(
             plugin_name="Analyst",
             function_name="analyze",
             arguments=KernelArguments(subtask=subtask, chunks_json=chunks_json),
         )
+        metrics.record_agent_latency("AnalystAgent", int((time.time() - _t) * 1000))
 
         try:
             analysis = json.loads(str(analysis_result))
@@ -114,11 +115,10 @@ async def run_query(req: QueryRequest):
             {"subtask": subtask, "kpis": analysis.get("kpis", []), "claims": claims}
         )
 
-    # ── AuditorAgent — SK native plugin ──────────────────────────────────────
-    # Structural entailment pass: every claim is checked before synthesis.
-    # kernel.invoke() passes the full claims list as a single JSON argument.
+    # ── AuditorAgent ─────────────────────────────────────────────────────────
     agents_invoked.append("AuditorAgent")
     threshold = req.confidence_threshold or settings.confidence_threshold
+    _t = time.time()
     audit_result = await kernel.invoke(
         plugin_name="Auditor",
         function_name="audit",
@@ -127,12 +127,13 @@ async def run_query(req: QueryRequest):
             confidence_threshold=str(threshold),
         ),
     )
+    metrics.record_agent_latency("AuditorAgent", int((time.time() - _t) * 1000))
 
     verified, uncertain, unverifiable_claims = _parse_audit_result(str(audit_result))
 
-    # ── ComparatorAgent — SK native plugin ───────────────────────────────────
-    # Cross-document synthesis with multi-source citations.
+    # ── ComparatorAgent ───────────────────────────────────────────────────────
     agents_invoked.append("ComparatorAgent")
+    _t = time.time()
     compare_result = await kernel.invoke(
         plugin_name="Comparator",
         function_name="compare",
@@ -141,16 +142,16 @@ async def run_query(req: QueryRequest):
             original_query=req.query,
         ),
     )
+    metrics.record_agent_latency("ComparatorAgent", int((time.time() - _t) * 1000))
 
     try:
         comparison = json.loads(str(compare_result))
     except json.JSONDecodeError:
         comparison = {"deltas": [], "cross_document_claims": [], "summary": ""}
 
-    # ── SynthesizerAgent — SK semantic function ───────────────────────────────
-    # Assembles the final report from verified + uncertain claims only.
-    # Internally calls kernel.invoke("Synthesizer", "synthesize", KernelArguments(...)).
+    # ── SynthesizerAgent ─────────────────────────────────────────────────────
     agents_invoked.append("SynthesizerAgent")
+    _t = time.time()
     try:
         summary = await synthesize_report(req.query, verified, uncertain, comparison, task_id)
     except Exception:
@@ -161,6 +162,7 @@ async def run_query(req: QueryRequest):
             )
         else:
             raise
+    metrics.record_agent_latency("SynthesizerAgent", int((time.time() - _t) * 1000))
 
     latency_ms = int((time.time() - start_ms) * 1000)
 

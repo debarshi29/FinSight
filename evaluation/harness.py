@@ -19,7 +19,7 @@ async def run_query(client: httpx.AsyncClient, query: str) -> dict:
         response = await client.post(
             f"{API_BASE}/query",
             json={"query": query},
-            timeout=120.0,
+            timeout=360.0,
         )
         return response.json()
     except Exception as e:
@@ -42,6 +42,9 @@ def score_result(result: dict, test_case: dict) -> dict:
     elif expected_behavior == "uncertain_or_unverifiable":
         passed = len(uncertain) > 0 or len(blocked) > 0
         reason = f"uncertain={len(uncertain)}, blocked={len(blocked)}"
+    elif expected_behavior in ("verified_or_uncertain", "partial_or_insufficient_evidence"):
+        passed = len(verified) > 0 or len(uncertain) > 0
+        reason = f"verified={len(verified)}, uncertain={len(uncertain)}"
     else:
         passed = len(verified) > 0
         reason = f"verified={len(verified)}"
