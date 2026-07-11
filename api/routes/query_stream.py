@@ -41,6 +41,7 @@ async def run_query_stream(req: QueryRequest):
         agents_invoked: list[str] = []
 
         metrics.record_start()
+        log.info("stream.start", task_id=task_id[:8], query=req.query[:80])
         yield _event("start", {"task_id": task_id, "query": req.query})
 
         # ── PlannerAgent ────────────────────────────────────────────────────
@@ -70,6 +71,7 @@ async def run_query_stream(req: QueryRequest):
                 return
         metrics.record_agent_latency("PlannerAgent", int((time.time() - _t) * 1000))
         subtasks = _parse_subtasks(str(plan_result), req.query)
+        log.info("stream.planned", task_id=task_id[:8], subtasks=len(subtasks))
         yield _event("planned", {"subtasks": subtasks})
 
         all_claims: list[dict] = []
@@ -136,6 +138,7 @@ async def run_query_stream(req: QueryRequest):
             yield _event("analyzed", {"subtask": subtask, "claims": len(claims)})
 
         # ── AuditorAgent ─────────────────────────────────────────────────────
+        log.info("stream.auditor_start", task_id=task_id[:8], total_claims=len(all_claims))
         agents_invoked.append("AuditorAgent")
         _t = time.time()
         try:
@@ -154,6 +157,9 @@ async def run_query_stream(req: QueryRequest):
             yield _event("error", {"stage": "AuditorAgent", "detail": str(exc)})
             return
         metrics.record_agent_latency("AuditorAgent", int((time.time() - _t) * 1000))
+        log.info(
+            "stream.audited", task_id=task_id[:8], verified=len(verified), uncertain=len(uncertain)
+        )
 
         yield _event(
             "audited",
@@ -188,6 +194,7 @@ async def run_query_stream(req: QueryRequest):
         yield _event("compared", {"deltas": len(comparison.get("deltas", []))})
 
         # ── SynthesizerAgent ─────────────────────────────────────────────────
+        log.info("stream.synthesizer_start", task_id=task_id[:8])
         agents_invoked.append("SynthesizerAgent")
         _t = time.time()
         try:
@@ -207,6 +214,7 @@ async def run_query_stream(req: QueryRequest):
                 yield _event("error", {"stage": "SynthesizerAgent", "detail": str(exc)})
                 return
         metrics.record_agent_latency("SynthesizerAgent", int((time.time() - _t) * 1000))
+        log.info("stream.synthesizer_done", task_id=task_id[:8])
 
         latency_ms = int((time.time() - start_ms) * 1000)
 
