@@ -13,7 +13,7 @@ from agents.synthesizer import synthesize_report
 from api.metrics_store import metrics
 from core.config import settings
 from core.models import AnalysisReport, AuditLog
-from core.sk_kernel import get_kernel
+from core.sk_kernel import get_fallback_kernel, get_kernel
 
 from .query import (
     QueryRequest,
@@ -33,44 +33,43 @@ def _event(name: str, data: dict) -> str:
 
 @router.post("/stream")
 async def run_query_stream(req: QueryRequest):
-    """
-    Server-Sent Events endpoint. Emits one event per agent stage so the
-    client can show live progress without polling.
-
-    Event types:
-      start       — query accepted, task_id assigned
-      planned     — PlannerAgent complete, subtask list emitted
-      retrieved   — RetrieverAgent complete for one subtask
-      analyzed    — AnalystAgent complete for one subtask
-      audited     — AuditorAgent complete, verified/uncertain/blocked counts
-      compared    — ComparatorAgent complete
-      done        — SynthesizerAgent complete, full result payload included
-      error       — unrecoverable failure
-    """
-
     async def generate():
         task_id = str(uuid.uuid4())
         start_ms = time.time()
         kernel = get_kernel()
+        fallback_kernel = get_fallback_kernel()
         agents_invoked: list[str] = []
 
         metrics.record_start()
         yield _event("start", {"task_id": task_id, "query": req.query})
 
         # ── PlannerAgent ────────────────────────────────────────────────────
+        agents_invoked.append("PlannerAgent")
+        _t = time.time()
         try:
-            agents_invoked.append("PlannerAgent")
             plan_result = await kernel.invoke(
                 plugin_name="Planner",
                 function_name="decompose",
                 arguments=KernelArguments(user_task=req.query),
             )
-            subtasks = _parse_subtasks(str(plan_result), req.query)
         except Exception as exc:
-            metrics.record_error(task_id, req.query, "PlannerAgent", str(exc))
-            yield _event("error", {"stage": "PlannerAgent", "detail": str(exc)})
-            return
-
+            if fallback_kernel:
+                try:
+                    plan_result = await fallback_kernel.invoke(
+                        plugin_name="Planner",
+                        function_name="decompose",
+                        arguments=KernelArguments(user_task=req.query),
+                    )
+                except Exception as exc2:
+                    metrics.record_error(task_id, req.query, "PlannerAgent", str(exc2))
+                    yield _event("error", {"stage": "PlannerAgent", "detail": str(exc2)})
+                    return
+            else:
+                metrics.record_error(task_id, req.query, "PlannerAgent", str(exc))
+                yield _event("error", {"stage": "PlannerAgent", "detail": str(exc)})
+                return
+        metrics.record_agent_latency("PlannerAgent", int((time.time() - _t) * 1000))
+        subtasks = _parse_subtasks(str(plan_result), req.query)
         yield _event("planned", {"subtasks": subtasks})
 
         all_claims: list[dict] = []
@@ -79,8 +78,9 @@ async def run_query_stream(req: QueryRequest):
 
         for subtask in subtasks:
             # ── RetrieverAgent ───────────────────────────────────────────────
+            agents_invoked.append("RetrieverAgent")
+            _t = time.time()
             try:
-                agents_invoked.append("RetrieverAgent")
                 retrieve_result = await kernel.invoke(
                     plugin_name="Retriever",
                     function_name="retrieve",
@@ -100,6 +100,7 @@ async def run_query_stream(req: QueryRequest):
                     "error", {"stage": "RetrieverAgent", "subtask": subtask, "detail": str(exc)}
                 )
                 continue
+            metrics.record_agent_latency("RetrieverAgent", int((time.time() - _t) * 1000))
 
             retrievals[subtask] = [c.get("chunk_id", "") for c in chunks_data]
             yield _event("retrieved", {"subtask": subtask, "chunks": len(chunks_data)})
@@ -108,8 +109,9 @@ async def run_query_stream(req: QueryRequest):
                 continue
 
             # ── AnalystAgent ─────────────────────────────────────────────────
+            agents_invoked.append("AnalystAgent")
+            _t = time.time()
             try:
-                agents_invoked.append("AnalystAgent")
                 analysis_result = await kernel.invoke(
                     plugin_name="Analyst",
                     function_name="analyze",
@@ -124,6 +126,7 @@ async def run_query_stream(req: QueryRequest):
                     "error", {"stage": "AnalystAgent", "subtask": subtask, "detail": str(exc)}
                 )
                 continue
+            metrics.record_agent_latency("AnalystAgent", int((time.time() - _t) * 1000))
 
             claims = analysis.get("claims", [])
             all_claims.extend(claims)
@@ -133,8 +136,9 @@ async def run_query_stream(req: QueryRequest):
             yield _event("analyzed", {"subtask": subtask, "claims": len(claims)})
 
         # ── AuditorAgent ─────────────────────────────────────────────────────
+        agents_invoked.append("AuditorAgent")
+        _t = time.time()
         try:
-            agents_invoked.append("AuditorAgent")
             threshold = req.confidence_threshold or settings.confidence_threshold
             audit_result = await kernel.invoke(
                 plugin_name="Auditor",
@@ -149,6 +153,7 @@ async def run_query_stream(req: QueryRequest):
             metrics.record_error(task_id, req.query, "AuditorAgent", str(exc))
             yield _event("error", {"stage": "AuditorAgent", "detail": str(exc)})
             return
+        metrics.record_agent_latency("AuditorAgent", int((time.time() - _t) * 1000))
 
         yield _event(
             "audited",
@@ -160,8 +165,9 @@ async def run_query_stream(req: QueryRequest):
         )
 
         # ── ComparatorAgent ──────────────────────────────────────────────────
+        agents_invoked.append("ComparatorAgent")
+        _t = time.time()
         try:
-            agents_invoked.append("ComparatorAgent")
             compare_result = await kernel.invoke(
                 plugin_name="Comparator",
                 function_name="compare",
@@ -177,17 +183,30 @@ async def run_query_stream(req: QueryRequest):
         except Exception as exc:
             yield _event("error", {"stage": "ComparatorAgent", "detail": str(exc)})
             comparison = {"deltas": [], "cross_document_claims": [], "summary": ""}
+        metrics.record_agent_latency("ComparatorAgent", int((time.time() - _t) * 1000))
 
         yield _event("compared", {"deltas": len(comparison.get("deltas", []))})
 
         # ── SynthesizerAgent ─────────────────────────────────────────────────
+        agents_invoked.append("SynthesizerAgent")
+        _t = time.time()
         try:
-            agents_invoked.append("SynthesizerAgent")
             summary = await synthesize_report(req.query, verified, uncertain, comparison, task_id)
         except Exception as exc:
-            metrics.record_error(task_id, req.query, "SynthesizerAgent", str(exc))
-            yield _event("error", {"stage": "SynthesizerAgent", "detail": str(exc)})
-            return
+            if fallback_kernel:
+                try:
+                    summary = await synthesize_report(
+                        req.query, verified, uncertain, comparison, task_id, kernel=fallback_kernel
+                    )
+                except Exception as exc2:
+                    metrics.record_error(task_id, req.query, "SynthesizerAgent", str(exc2))
+                    yield _event("error", {"stage": "SynthesizerAgent", "detail": str(exc2)})
+                    return
+            else:
+                metrics.record_error(task_id, req.query, "SynthesizerAgent", str(exc))
+                yield _event("error", {"stage": "SynthesizerAgent", "detail": str(exc)})
+                return
+        metrics.record_agent_latency("SynthesizerAgent", int((time.time() - _t) * 1000))
 
         latency_ms = int((time.time() - start_ms) * 1000)
 
