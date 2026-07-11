@@ -39,7 +39,7 @@ async def chat_completion(
     last_exc: Exception | None = None
     for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
         if delay:
-            _log.warning("groq.rate_limit_retry", attempt=attempt, delay=delay)
+            _log.warning("groq.rate_limit_retry attempt=%d delay=%.1f", attempt, delay)
             await asyncio.sleep(delay)
         try:
             response = await client.chat.completions.create(**kwargs)
