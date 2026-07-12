@@ -24,11 +24,22 @@ class RetrieverPlugin:
         self._store = QdrantStore()
         self._bm25: BM25Retriever | None = None
         self._all_payloads: list[dict] = []
+        self._init_lock: asyncio.Lock = asyncio.Lock()
+        self._collection_ready: bool = False
 
     async def _ensure_bm25(self) -> None:
-        if self._bm25 is None:
-            self._all_payloads = await self._store.scroll_all()
-            self._bm25 = BM25Retriever(self._all_payloads)
+        """Build BM25 index once; subsequent calls are no-ops. Lock prevents
+        concurrent parallel subtasks from each triggering a full scroll_all."""
+        if self._bm25 is not None:
+            return
+        async with self._init_lock:
+            if self._bm25 is None:  # double-check after acquiring lock
+                if not self._collection_ready:
+                    await self._store.ensure_collection()
+                    self._collection_ready = True
+                self._all_payloads = await self._store.scroll_all()
+                self._bm25 = BM25Retriever(self._all_payloads)
+                log.info("retriever.bm25_built", corpus_size=len(self._all_payloads))
 
     @kernel_function(name="retrieve", description="Retrieve relevant chunks for a subtask query")
     async def retrieve(
@@ -40,13 +51,21 @@ class RetrieverPlugin:
         """Returns a JSON string of ranked chunks with citations."""
         import json
 
+        await self._ensure_bm25()  # no-op after first call per process lifetime
+
         filters: dict[str, str] = {}
         if company_filter:
             filters["company"] = company_filter
         if fiscal_year_filter:
             filters["fiscal_year"] = fiscal_year_filter
 
-        ranked = await retrieve_chunks(subtask, self._store, filters=filters or None)
+        ranked = await retrieve_chunks(
+            subtask,
+            self._store,
+            filters=filters or None,
+            bm25=self._bm25,
+            all_payloads=self._all_payloads,
+        )
         return json.dumps(
             [
                 {
@@ -69,13 +88,17 @@ async def retrieve_chunks(
     store: QdrantStore | None = None,
     top_k: int | None = None,
     filters: dict[str, str] | None = None,
+    bm25: BM25Retriever | None = None,
+    all_payloads: list[dict] | None = None,
 ) -> list[RankedChunk]:
     store = store or QdrantStore()
     top_k = top_k or settings.retrieval_top_k
 
-    await store.ensure_collection()
+    if all_payloads is None:
+        # Standalone call (e.g. tests) — build corpus from scratch
+        await store.ensure_collection()
+        all_payloads = await store.scroll_all()
 
-    all_payloads = await store.scroll_all()
     if not all_payloads:
         log.warning("retriever.empty_collection")
         return []
@@ -100,7 +123,10 @@ async def retrieve_chunks(
             log.warning("retriever.filter_no_match", filters=filters)
             return []
 
-    bm25 = BM25Retriever(bm25_payloads)
+    # Reuse the pre-built BM25 index when no filter changes the corpus,
+    # otherwise rebuild only over the filtered subset.
+    if bm25 is None or filters:
+        bm25 = BM25Retriever(bm25_payloads)
     query_vec = embed_query(query)
 
     # Pass only company to Qdrant (exact field match); fiscal_year filtering
