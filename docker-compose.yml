@@ -2,7 +2,7 @@ services:
 
   # ── Qdrant vector store ────────────────────────────────────────
   qdrant:
-    image: qdrant/qdrant:v1.12.0
+    image: qdrant/qdrant:latest
     container_name: finsight_qdrant
     restart: unless-stopped
     ports:
@@ -14,7 +14,7 @@ services:
       QDRANT__SERVICE__HTTP_PORT: "6333"
       QDRANT__SERVICE__GRPC_PORT: "6334"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/readyz | grep -q '{}' || exit 1"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 8
