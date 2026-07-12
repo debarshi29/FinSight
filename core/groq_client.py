@@ -11,21 +11,56 @@ _log = logging.getLogger(__name__)
 
 _RETRY_DELAYS = [1.0, 2.0, 4.0]  # seconds between retries on rate-limit
 
+# Singleton clients — created once, reused across all requests.
+# Explicit timeouts prevent the default 600-second hang on a slow endpoint.
+_primary_client: openai.AsyncOpenAI | None = None
+_primary_model: str = ""
+_reserve_client: openai.AsyncOpenAI | None = None
+_reserve_model: str = ""
 
+
+def _init_clients() -> None:
+    global _primary_client, _primary_model, _reserve_client, _reserve_model
+
+    if settings.fallback_api_key and settings.fallback_model and settings.fallback_base_url:
+        # Fallback endpoint is primary; Groq is the reserve.
+        _primary_client = openai.AsyncOpenAI(
+            api_key=settings.fallback_api_key,
+            base_url=settings.fallback_base_url,
+            timeout=45.0,
+        )
+        _primary_model = settings.fallback_model
+        _reserve_client = openai.AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url=settings.groq_base_url,
+            timeout=60.0,
+        )
+        _reserve_model = settings.groq_model
+    else:
+        _primary_client = openai.AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url=settings.groq_base_url,
+            timeout=60.0,
+        )
+        _primary_model = settings.groq_model
+        _reserve_client = None
+        _reserve_model = ""
+
+
+def _get_clients() -> tuple[openai.AsyncOpenAI, str, openai.AsyncOpenAI | None, str]:
+    global _primary_client
+    if _primary_client is None:
+        _init_clients()
+    return _primary_client, _primary_model, _reserve_client, _reserve_model  # type: ignore[return-value]
+
+
+# Kept for backward compatibility — callers that imported these functions directly.
 def get_groq_async_client() -> openai.AsyncOpenAI:
-    return openai.AsyncOpenAI(
-        api_key=settings.groq_api_key,
-        base_url=settings.groq_base_url,
-    )
-
-
-def _get_fallback_client() -> openai.AsyncOpenAI | None:
-    if not settings.fallback_api_key or not settings.fallback_base_url:
-        return None
-    return openai.AsyncOpenAI(
-        api_key=settings.fallback_api_key,
-        base_url=settings.fallback_base_url,
-    )
+    _, _, reserve, _ = _get_clients()
+    if reserve:
+        return reserve
+    primary, _, _, _ = _get_clients()
+    return primary
 
 
 async def _call(
@@ -55,18 +90,7 @@ async def chat_completion(
     max_tokens: int = 2048,
     response_format: dict | None = None,
 ) -> str:
-    # Use the fallback endpoint as primary if configured; Groq is the reserve.
-    fallback_client = _get_fallback_client()
-    if fallback_client and settings.fallback_model:
-        primary_client = fallback_client
-        primary_model = settings.fallback_model
-        reserve_client: openai.AsyncOpenAI | None = get_groq_async_client()
-        reserve_model: str = settings.groq_model
-    else:
-        primary_client = get_groq_async_client()
-        primary_model = settings.groq_model
-        reserve_client = None
-        reserve_model = ""
+    primary_client, primary_model, reserve_client, reserve_model = _get_clients()
 
     last_exc: Exception | None = None
     for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
@@ -84,6 +108,10 @@ async def chat_completion(
                 last_exc = exc
             else:
                 raise
+        except (openai.APITimeoutError, openai.APIConnectionError) as exc:
+            _log.warning("llm.primary_timeout attempt=%d error=%s", attempt, str(exc)[:80])
+            last_exc = exc
+            break  # don't retry timeouts — go straight to reserve
 
     # Primary exhausted — try reserve
     if reserve_client:
