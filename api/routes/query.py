@@ -17,6 +17,7 @@ from core.config import settings
 from core.groq_client import chat_completion
 from core.models import AnalysisReport, AuditedClaim, AuditLog, AuditStatus, Citation
 from core.sk_kernel import PLANNER_PROMPT, get_kernel
+from core.unit_normalizer import normalize_subtask_results
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/query", tags=["query"])
@@ -122,6 +123,7 @@ async def run_query(req: QueryRequest):
         arguments=KernelArguments(
             claims_json=json.dumps(all_claims),
             confidence_threshold=str(threshold),
+            original_query=req.query,
         ),
     )
     metrics.record_agent_latency("AuditorAgent", int((time.time() - _t) * 1000))
@@ -131,11 +133,12 @@ async def run_query(req: QueryRequest):
     # ── ComparatorAgent ───────────────────────────────────────────────────────
     agents_invoked.append("ComparatorAgent")
     _t = time.time()
+    normalized_subtask_results = normalize_subtask_results(subtask_results)
     compare_result = await kernel.invoke(
         plugin_name="Comparator",
         function_name="compare",
         arguments=KernelArguments(
-            subtask_results_json=json.dumps(subtask_results),
+            subtask_results_json=json.dumps(normalized_subtask_results),
             original_query=req.query,
         ),
     )

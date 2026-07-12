@@ -188,6 +188,7 @@ async def run_query_stream(req: QueryRequest):
                 arguments=KernelArguments(
                     claims_json=json.dumps(all_claims),
                     confidence_threshold=str(threshold),
+                    original_query=req.query,
                 ),
             )
             return str(res)
