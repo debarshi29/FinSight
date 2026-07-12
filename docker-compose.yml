@@ -1,35 +1,67 @@
 services:
+
+  # ── Qdrant vector store ────────────────────────────────────────
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.12.0
     container_name: finsight_qdrant
+    restart: unless-stopped
     ports:
       - "6333:6333"
       - "6334:6334"
     volumes:
       - ./qdrant_storage:/qdrant/storage
     environment:
-      - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__SERVICE__GRPC_PORT=6334
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:6333/readyz"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
 
+  # ── FinSight API ───────────────────────────────────────────────
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finsight:latest
     container_name: finsight_api
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
+      # Service discovery — override localhost defaults for container networking
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      # Structured JSON logging for container log aggregation
+      LOG_FORMAT: json
+      LOG_LEVEL: INFO
+    # Runtime secrets are never baked into the image (see .dockerignore).
+    # Create a local .env from .env.example and set GROQ_API_KEY etc.
     env_file:
       - .env
     volumes:
+      # Persist audit logs and document filings outside the container
       - ./audit_logs:/app/audit_logs
       - ./data:/app/data
     depends_on:
       qdrant:
         condition: service_healthy
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    # Explicit healthcheck for docker-compose ps / orchestrator readiness
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
