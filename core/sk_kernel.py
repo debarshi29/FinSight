@@ -43,8 +43,10 @@ Comparative Analysis:
 {comparison}
 
 Rules:
-- Do NOT include any claim absent from the lists above
-- Every figure must cite its source document and page
+- Do NOT include any figure, claim, or statistic absent from the lists above
+- Do NOT perform arithmetic, derive new numbers, or infer values — only report what is explicitly stated
+- If a company's data is missing or marked N/A, state that it is unavailable rather than estimating
+- Every figure must cite its source document and page in parentheses
 - Use these exact section headers: ## Executive Summary, ## Key Findings, ## Comparative Analysis, ## Risk Flags
 - Use bullet points (- ) for lists of findings
 - Mark uncertain claims with [UNCERTAIN] inline
