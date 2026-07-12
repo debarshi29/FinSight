@@ -125,3 +125,60 @@ async def chat_completion(
             raise RuntimeError("Both LLM endpoints failed") from exc
 
     raise RuntimeError(f"LLM failed after {len(_RETRY_DELAYS) + 1} attempts") from last_exc
+
+
+async def chat_completion_hedged(
+    messages: list[dict],
+    hedge_after: float = 8.0,
+    temperature: float = 0.0,
+    max_tokens: int = 2048,
+    response_format: dict | None = None,
+) -> str:
+    """Hedged LLM call: fire primary, then if it hasn't responded within
+    `hedge_after` seconds, concurrently fire the reserve and take whichever
+    wins. Keeps p95 latency at ~hedge_after + winner_latency instead of
+    primary_timeout + reserve_latency. Falls back to plain chat_completion
+    when no reserve client is configured."""
+    primary_client, primary_model, reserve_client, reserve_model = _get_clients()
+
+    if not reserve_client:
+        # No reserve configured — behave identically to chat_completion
+        return await chat_completion(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+
+    primary_task = asyncio.create_task(
+        _call(primary_client, primary_model, messages, temperature, max_tokens, response_format)
+    )
+
+    # Wait up to hedge_after seconds for the primary to finish cleanly
+    done, _ = await asyncio.wait({primary_task}, timeout=hedge_after)
+    if done and not primary_task.exception():
+        return primary_task.result()
+
+    # Primary is slow or already failed — fire the reserve concurrently
+    _log.warning("llm.hedging primary_slow=True hedge_after=%.1f", hedge_after)
+    reserve_task = asyncio.create_task(
+        _call(reserve_client, reserve_model, messages, temperature, max_tokens, response_format)
+    )
+
+    done, pending = await asyncio.wait(
+        {primary_task, reserve_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    for t in pending:
+        t.cancel()
+
+    winner = next(iter(done))
+    if winner.exception():
+        # Winner raised — try the cancelled task's result if it completed
+        for t in pending:
+            try:
+                return await t
+            except Exception:
+                pass
+        raise RuntimeError("Both LLM endpoints failed in hedged call") from winner.exception()
+    return winner.result()

@@ -13,7 +13,7 @@ from semantic_kernel.functions import KernelArguments
 from agents.synthesizer import synthesize_report
 from api.metrics_store import metrics
 from core.config import settings
-from core.groq_client import chat_completion
+from core.groq_client import chat_completion_hedged
 from core.models import AnalysisReport, AuditLog
 from core.sk_kernel import PLANNER_PROMPT, get_kernel
 
@@ -115,10 +115,11 @@ async def run_query_stream(req: QueryRequest):
         agents_invoked.append("PlannerAgent")
         _t = time.time()
         try:
-            plan_text = await chat_completion(
+            plan_text = await chat_completion_hedged(
                 messages=[{"role": "user", "content": PLANNER_PROMPT.format(user_task=req.query)}],
                 max_tokens=500,
                 temperature=0.0,
+                hedge_after=8.0,
             )
         except Exception as exc:
             metrics.record_error(task_id, req.query, "PlannerAgent", str(exc))
@@ -167,13 +168,16 @@ async def run_query_stream(req: QueryRequest):
         metrics.record_agent_latency("RetrieverAgent", ra_ms)
         metrics.record_agent_latency("AnalystAgent", ra_ms)
 
-        # ── AuditorAgent ──────────────────────────────────────────────
-        log.info("stream.auditor_start", task_id=task_id[:8], total_claims=len(all_claims))
-        agents_invoked.append("AuditorAgent")
+        # ── AuditorAgent + ComparatorAgent — run concurrently ────────
+        # Neither depends on the other; both need only subtask_results.
+        # Wall-clock = max(auditor, comparator) instead of their sum.
+        log.info("stream.audit_compare_start", task_id=task_id[:8], total_claims=len(all_claims))
+        agents_invoked.extend(["AuditorAgent", "ComparatorAgent"])
         _t = time.time()
-        try:
-            threshold = req.confidence_threshold or settings.confidence_threshold
-            audit_result = await kernel.invoke(
+        threshold = req.confidence_threshold or settings.confidence_threshold
+
+        async def _audit() -> str:
+            res = await kernel.invoke(
                 plugin_name="Auditor",
                 function_name="audit",
                 arguments=KernelArguments(
@@ -181,17 +185,32 @@ async def run_query_stream(req: QueryRequest):
                     confidence_threshold=str(threshold),
                 ),
             )
-            verified, uncertain, unverifiable_claims = _parse_audit_result(str(audit_result))
-        except Exception as exc:
-            metrics.record_error(task_id, req.query, "AuditorAgent", str(exc))
-            yield _event("error", {"stage": "AuditorAgent", "detail": str(exc)})
+            return str(res)
+
+        async def _compare() -> str:
+            res = await kernel.invoke(
+                plugin_name="Comparator",
+                function_name="compare",
+                arguments=KernelArguments(
+                    subtask_results_json=json.dumps(subtask_results),
+                    original_query=req.query,
+                ),
+            )
+            return str(res)
+
+        audit_raw, compare_raw = await asyncio.gather(_audit(), _compare(), return_exceptions=True)
+        ac_ms = int((time.time() - _t) * 1000)
+        metrics.record_agent_latency("AuditorAgent", ac_ms)
+        metrics.record_agent_latency("ComparatorAgent", ac_ms)
+
+        # Process auditor result
+        if isinstance(audit_raw, Exception):
+            metrics.record_error(task_id, req.query, "AuditorAgent", str(audit_raw))
+            yield _event("error", {"stage": "AuditorAgent", "detail": str(audit_raw)})
             return
-        metrics.record_agent_latency("AuditorAgent", int((time.time() - _t) * 1000))
+        verified, uncertain, unverifiable_claims = _parse_audit_result(audit_raw)
         log.info(
-            "stream.audited",
-            task_id=task_id[:8],
-            verified=len(verified),
-            uncertain=len(uncertain),
+            "stream.audited", task_id=task_id[:8], verified=len(verified), uncertain=len(uncertain)
         )
         yield _event(
             "audited",
@@ -202,26 +221,15 @@ async def run_query_stream(req: QueryRequest):
             },
         )
 
-        # ── ComparatorAgent ───────────────────────────────────────────
-        agents_invoked.append("ComparatorAgent")
-        _t = time.time()
-        try:
-            compare_result = await kernel.invoke(
-                plugin_name="Comparator",
-                function_name="compare",
-                arguments=KernelArguments(
-                    subtask_results_json=json.dumps(subtask_results),
-                    original_query=req.query,
-                ),
-            )
+        # Process comparator result
+        if isinstance(compare_raw, Exception):
+            yield _event("error", {"stage": "ComparatorAgent", "detail": str(compare_raw)})
+            comparison: dict = {"deltas": [], "cross_document_claims": [], "summary": ""}
+        else:
             try:
-                comparison = json.loads(str(compare_result))
+                comparison = json.loads(compare_raw)
             except json.JSONDecodeError:
                 comparison = {"deltas": [], "cross_document_claims": [], "summary": ""}
-        except Exception as exc:
-            yield _event("error", {"stage": "ComparatorAgent", "detail": str(exc)})
-            comparison = {"deltas": [], "cross_document_claims": [], "summary": ""}
-        metrics.record_agent_latency("ComparatorAgent", int((time.time() - _t) * 1000))
         yield _event("compared", {"deltas": len(comparison.get("deltas", []))})
 
         # ── SynthesizerAgent — direct LLM call ────────────────────────
