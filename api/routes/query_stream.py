@@ -16,6 +16,7 @@ from core.config import settings
 from core.groq_client import chat_completion_hedged
 from core.models import AnalysisReport, AuditLog
 from core.sk_kernel import PLANNER_PROMPT, get_kernel
+from core.unit_normalizer import normalize_subtask_results
 
 from .query import (
     QueryRequest,
@@ -176,6 +177,10 @@ async def run_query_stream(req: QueryRequest):
         _t = time.time()
         threshold = req.confidence_threshold or settings.confidence_threshold
 
+        # Normalize financial units to ₹ crore before comparator sees the data.
+        # This is deterministic Python math — the LLM never does arithmetic.
+        normalized_subtask_results = normalize_subtask_results(subtask_results)
+
         async def _audit() -> str:
             res = await kernel.invoke(
                 plugin_name="Auditor",
@@ -192,7 +197,7 @@ async def run_query_stream(req: QueryRequest):
                 plugin_name="Comparator",
                 function_name="compare",
                 arguments=KernelArguments(
-                    subtask_results_json=json.dumps(subtask_results),
+                    subtask_results_json=json.dumps(normalized_subtask_results),
                     original_query=req.query,
                 ),
             )
