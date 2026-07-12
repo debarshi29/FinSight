@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.middleware.guardrails import guardrails_middleware
+from api.middleware.guardrails import GuardrailsMiddleware
 from api.routes import eval as eval_router
 from api.routes import ingest as ingest_router
 from api.routes import metrics as metrics_router
@@ -44,7 +44,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.middleware("http")(guardrails_middleware)
+    app.add_middleware(GuardrailsMiddleware)
 
     app.include_router(ingest_router.router)
     app.include_router(query_router.router)
