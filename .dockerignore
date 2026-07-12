@@ -1,0 +1,47 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Secrets — never bake into the image; pass via env_file / --env-file at runtime
+.env
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv
+*.egg-info
+.eggs
+dist
+build
+
+# uv cache
+.uv
+
+# Development tooling
+.pre-commit-config.yaml
+.ruff_cache
+.mypy_cache
+.pytest_cache
+.coverage
+htmlcov
+
+# Test suite
+tests/
+
+# Local runtime state — mounted as volumes at runtime
+qdrant_storage/
+audit_logs/
+evaluation/results/
+
+# Large binary assets — filings are mounted at runtime via ./data volume
+data/filings/
+
+# Docs and misc
+*.md
+*.pdf
+*.txt
+.python-version
