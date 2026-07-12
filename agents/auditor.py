@@ -158,20 +158,36 @@ async def _check_entailment(
         max_tokens=200,
     )
 
+    raw = content.strip()
+    # Strip markdown code fences if present
+    if raw.startswith("```"):
+        raw = "\n".join(
+            line for line in raw.splitlines() if not line.strip().startswith("```")
+        ).strip()
+
+    parsed: dict | None = None
     try:
-        data = json.loads(content.strip())
-        status_str = data.get("audit_status", "uncertain")
-        return {
-            "status": AuditStatus(status_str),
-            "reason": data.get("reason", ""),
-        }
+        parsed = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
-        if confidence < threshold:
+        import re
+
+        m = re.search(r"\{[\s\S]+?\}", raw)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    if parsed is not None:
+        try:
             return {
-                "status": AuditStatus.UNCERTAIN,
-                "reason": "Low confidence; parse error",
+                "status": AuditStatus(parsed.get("audit_status", "uncertain")),
+                "reason": parsed.get("reason", ""),
             }
-        return {
-            "status": AuditStatus.UNCERTAIN,
-            "reason": "Could not parse entailment check",
-        }
+        except ValueError:
+            pass
+
+    # Fallback: classify by confidence score alone
+    if confidence < threshold:
+        return {"status": AuditStatus.UNCERTAIN, "reason": "Low confidence; parse error"}
+    return {"status": AuditStatus.UNCERTAIN, "reason": "Could not parse entailment check"}
