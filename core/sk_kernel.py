@@ -44,10 +44,12 @@ Comparative Analysis:
 
 Rules:
 - Do NOT include any claim absent from the lists above
-- Every figure must reference its source document
-- Structure: Executive Summary → Key Findings → Comparative Analysis → Risk Flags
-- Write in clear, professional financial analyst prose
-- Output plain text, not JSON"""
+- Every figure must cite its source document and page
+- Use these exact section headers: ## Executive Summary, ## Key Findings, ## Comparative Analysis, ## Risk Flags
+- Use bullet points (- ) for lists of findings
+- Mark uncertain claims with [UNCERTAIN] inline
+- Write concise professional prose — 3-5 sentences per section
+- Output GitHub-flavoured Markdown, NOT JSON and NOT plain text"""
 
 # Legacy SK template aliases kept so nothing importing the old names breaks
 _PLANNER_PROMPT = PLANNER_PROMPT

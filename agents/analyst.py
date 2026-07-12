@@ -12,28 +12,29 @@ from core.groq_client import chat_completion
 
 log = structlog.get_logger()
 
-_SYSTEM = """You are a financial analyst. You are given text chunks from financial filings and a specific subtask query.
+_SYSTEM = """You are a financial analyst. Extract key financial figures and factual claims from the provided filing chunks.
 
-Extract key financial figures, KPIs, and factual claims. For EVERY claim you make, you MUST cite the exact source chunk.
-
-Output valid JSON with this structure:
+Output ONLY valid JSON — no markdown fences, no explanation. Structure:
 {
   "kpis": [{"metric": "...", "value": "...", "period": "...", "company": "..."}],
   "claims": [
     {
-      "claim": "exact factual statement",
-      "supporting_text": "verbatim quote from source",
-      "source_doc": "filename",
+      "claim": "one precise factual sentence with a specific figure",
+      "supporting_text": "verbatim verbatim verbatim excerpt from the chunk",
+      "source_doc": "filename.pdf",
       "page": 0,
-      "confidence": 0.0
+      "confidence": 0.9,
+      "section_type": "audited_financials|mda|notes|letter"
     }
   ]
 }
 
 Rules:
-- Never invent figures. If a figure is not in the chunks, do not report it.
-- supporting_text must be a verbatim excerpt from the provided chunks.
-- confidence: 0.9 for audited_financials, 0.7 for notes, 0.5 for mda/letter."""
+- NEVER invent figures. Only report what is literally present in the chunks.
+- supporting_text must be a verbatim excerpt — copy the exact words from the chunk.
+- claim must be a plain-English statement (no markdown, no asterisks).
+- confidence: 0.9 for audited_financials, 0.75 for notes, 0.6 for mda or letter.
+- Extract at most 5 claims per call. Prefer the highest-confidence, most specific ones."""
 
 
 class AnalystPlugin:
