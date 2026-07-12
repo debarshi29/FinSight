@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import structlog
@@ -14,13 +15,7 @@ log = structlog.get_logger()
 
 
 class AuditorPlugin:
-    """
-    SK native plugin — structural entailment verification pass.
-
-    Registered to the kernel so the SK planner can include it in generated
-    plans. Wraps audit_claims as a single kernel_function that accepts and
-    returns JSON strings, keeping citation objects alive across the hop.
-    """
+    """SK native plugin — structural entailment verification pass."""
 
     @kernel_function(
         name="audit",
@@ -46,22 +41,72 @@ class AuditorPlugin:
         )
 
 
-_SYSTEM = """You are a compliance auditor. For each claim, determine whether the provided snippet ENTAILS the claim.
+# ── Batch entailment prompt ───────────────────────────────────────────────────
+_BATCH_SYSTEM = """You are a compliance auditor. For each claim, check if the snippet ENTAILS it.
 
-Entailment check: does this snippet, taken literally, support this claim? Answer strictly.
+Output ONLY a JSON array with one object per claim in the SAME ORDER as input. No markdown fences, no explanation outside the array.
 
-Output valid JSON for each claim:
-{
-  "audit_status": "verified" | "uncertain" | "unverifiable",
-  "reason": "one sentence explanation"
-}
+Each object must have exactly two keys:
+  "audit_status": "verified" | "uncertain" | "unverifiable"
+  "reason": "one sentence"
 
 Rules:
-- "verified": snippet directly supports claim AND confidence >= threshold
-- "uncertain": snippet weakly supports or only partially, OR confidence is low (< 0.65)
-- "unverifiable": no snippet provided, or snippet CONTRADICTS the claim
+- "verified":      snippet directly states or clearly implies the claim, AND confidence >= threshold
+- "uncertain":     snippet weakly or partially supports the claim, OR confidence < threshold
+- "unverifiable":  snippet is absent, irrelevant, or contradicts the claim
 
-This is a structural check, not a prompt instruction. Unverifiable claims are BLOCKED from the final report."""
+Example output (2 claims):
+[
+  {"audit_status": "verified",   "reason": "Snippet directly states the revenue figure."},
+  {"audit_status": "uncertain",  "reason": "Snippet mentions the topic but does not confirm the value."}
+]"""
+
+
+async def _batch_entailment(claims_data: list[dict], threshold: float) -> list[dict]:
+    """Audit all claims in one LLM call — O(1) calls instead of O(N)."""
+    payload = json.dumps(
+        [
+            {
+                "index": i,
+                "claim": c.get("claim", ""),
+                "snippet": c.get("supporting_text", "")[:400],
+                "confidence": round(float(c.get("confidence", 0.5)), 2),
+                "threshold": threshold,
+            }
+            for i, c in enumerate(claims_data)
+        ],
+        indent=2,
+    )
+
+    content = await chat_completion(
+        messages=[
+            {"role": "system", "content": _BATCH_SYSTEM},
+            {"role": "user", "content": payload},
+        ],
+        temperature=0.0,
+        max_tokens=min(250 * len(claims_data), 4096),
+    )
+
+    raw = content.strip()
+    if raw.startswith("```"):
+        raw = "\n".join(ln for ln in raw.splitlines() if not ln.strip().startswith("```")).strip()
+
+    # Try direct parse, then regex extraction of the array
+    for candidate in (raw, (m.group(0) if (m := re.search(r"\[[\s\S]+\]", raw)) else None)):
+        if candidate is None:
+            continue
+        try:
+            result = json.loads(candidate)
+            if isinstance(result, list):
+                # Pad to match input length if LLM returned fewer items
+                while len(result) < len(claims_data):
+                    result.append({"audit_status": "uncertain", "reason": "Missing verdict"})
+                return result[: len(claims_data)]
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    log.warning("auditor.batch_parse_failed", claims=len(claims_data))
+    return [{"audit_status": "uncertain", "reason": "Batch parse failed"} for _ in claims_data]
 
 
 async def audit_claims(
@@ -70,40 +115,42 @@ async def audit_claims(
     confidence_threshold: float | None = None,
 ) -> tuple[list[AuditedClaim], list[AuditedClaim], list[AuditedClaim]]:
     """
-    Returns (verified, uncertain, unverifiable) claim lists.
+    Returns (verified, uncertain, unverifiable).
 
-    AuditorAgent is a separate structural pass — not a prompt instruction.
-    Claims that fail entailment checking are blocked before synthesis.
-    You cannot prompt-engineer around a structural verification pass.
+    All claims with supporting text are audited in a single batch LLM call
+    instead of one call per claim, reducing auditor latency from O(N) to O(1).
     """
     threshold = confidence_threshold or settings.confidence_threshold
     verified, uncertain, unverifiable = [], [], []
 
+    # Split: claims without snippets are immediately unverifiable
+    needs_audit: list[tuple[int, dict]] = []
+    instant_unverifiable: list[dict] = []
+
     for claim_data in claims:
+        if not claim_data.get("supporting_text"):
+            instant_unverifiable.append(claim_data)
+        else:
+            needs_audit.append((len(needs_audit), claim_data))
+
+    # Batch audit claims that have snippets
+    verdicts: list[dict] = []
+    if needs_audit:
+        verdicts = await _batch_entailment([c for _, c in needs_audit], threshold)
+
+    # Build AuditedClaim objects from batch results
+    for (_, claim_data), verdict in zip(needs_audit, verdicts):
         claim_text = claim_data.get("claim", "")
         supporting_text = claim_data.get("supporting_text", "")
         source_doc = claim_data.get("source_doc", "unknown")
         page = claim_data.get("page", 0)
         confidence = float(claim_data.get("confidence", 0.5))
 
-        if not supporting_text:
-            audited = AuditedClaim(
-                claim=claim_text,
-                citation=Citation(
-                    document=source_doc,
-                    page=page,
-                    snippet="",
-                    claim=claim_text,
-                    confidence=0.0,
-                    section_type="unknown",
-                ),
-                audit_status=AuditStatus.UNVERIFIABLE,
-                audit_reason="No supporting snippet provided",
-            )
-            unverifiable.append(audited)
-            continue
-
-        verdict = await _check_entailment(claim_text, supporting_text, confidence, threshold)
+        raw_status = verdict.get("audit_status", "uncertain")
+        try:
+            status = AuditStatus(raw_status)
+        except ValueError:
+            status = AuditStatus.UNCERTAIN
 
         citation = Citation(
             document=source_doc,
@@ -116,78 +163,42 @@ async def audit_claims(
         audited = AuditedClaim(
             claim=claim_text,
             citation=citation,
-            audit_status=verdict["status"],
-            audit_reason=verdict["reason"],
+            audit_status=status,
+            audit_reason=verdict.get("reason", ""),
         )
 
-        if verdict["status"] == AuditStatus.VERIFIED:
+        if status == AuditStatus.VERIFIED:
             verified.append(audited)
-        elif verdict["status"] == AuditStatus.UNCERTAIN:
+        elif status == AuditStatus.UNCERTAIN:
             uncertain.append(audited)
         else:
             unverifiable.append(audited)
+
+    # Handle instant-unverifiable (no snippet)
+    for claim_data in instant_unverifiable:
+        claim_text = claim_data.get("claim", "")
+        source_doc = claim_data.get("source_doc", "unknown")
+        page = claim_data.get("page", 0)
+        audited = AuditedClaim(
+            claim=claim_text,
+            citation=Citation(
+                document=source_doc,
+                page=page,
+                snippet="",
+                claim=claim_text,
+                confidence=0.0,
+                section_type="unknown",
+            ),
+            audit_status=AuditStatus.UNVERIFIABLE,
+            audit_reason="No supporting snippet provided",
+        )
+        unverifiable.append(audited)
 
     log.info(
         "auditor.complete",
         verified=len(verified),
         uncertain=len(uncertain),
         unverifiable=len(unverifiable),
+        batch_size=len(needs_audit),
     )
     return verified, uncertain, unverifiable
-
-
-async def _check_entailment(
-    claim: str,
-    snippet: str,
-    confidence: float,
-    threshold: float,
-) -> dict[str, Any]:
-    content = await chat_completion(
-        messages=[
-            {"role": "system", "content": _SYSTEM},
-            {
-                "role": "user",
-                "content": (
-                    f"Claim: {claim}\n\n"
-                    f"Snippet: {snippet}\n\n"
-                    f"Confidence score: {confidence:.2f} (threshold: {threshold:.2f})"
-                ),
-            },
-        ],
-        temperature=0.0,
-        max_tokens=200,
-    )
-
-    raw = content.strip()
-    # Strip markdown code fences if present
-    if raw.startswith("```"):
-        raw = "\n".join(
-            line for line in raw.splitlines() if not line.strip().startswith("```")
-        ).strip()
-
-    parsed: dict | None = None
-    try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        import re
-
-        m = re.search(r"\{[\s\S]+?\}", raw)
-        if m:
-            try:
-                parsed = json.loads(m.group(0))
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-    if parsed is not None:
-        try:
-            return {
-                "status": AuditStatus(parsed.get("audit_status", "uncertain")),
-                "reason": parsed.get("reason", ""),
-            }
-        except ValueError:
-            pass
-
-    # Fallback: classify by confidence score alone
-    if confidence < threshold:
-        return {"status": AuditStatus.UNCERTAIN, "reason": "Low confidence; parse error"}
-    return {"status": AuditStatus.UNCERTAIN, "reason": "Could not parse entailment check"}
