@@ -22,14 +22,15 @@ def setup_tracing() -> None:
 
     import structlog
 
+    use_json = settings.log_format.lower() == "json" or settings.otel_enabled
+    renderer = structlog.processors.JSONRenderer() if use_json else structlog.dev.ConsoleRenderer()
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer()
-            if not settings.otel_enabled
-            else structlog.processors.JSONRenderer(),
+            renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(logging, settings.log_level.upper(), logging.INFO)

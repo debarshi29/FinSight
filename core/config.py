@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     otel_endpoint: str = "http://localhost:4317"
 
     log_level: str = "INFO"
+    # "json" emits newline-delimited JSON (suited for containers / log aggregators).
+    # "text" emits coloured human-readable output (suited for local development).
+    log_format: str = "text"
 
 
 settings = Settings()
