@@ -762,6 +762,7 @@ const ts = () => new Date().toTimeString().slice(0,8);
 /* ── Markdown → HTML renderer ─────────────────────── */
 function mdToHtml(md) {
   if (!md || typeof md !== 'string') return '';
+  md = md.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const lines = md.split('\n');
   const out   = [];
   let   listItems = [];
