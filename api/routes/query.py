@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -57,52 +58,59 @@ async def run_query(req: QueryRequest):
     subtask_results: list[dict] = []
     retrievals: dict[str, list[str]] = {}
 
-    for subtask in subtasks:
-        # ── RetrieverAgent ───────────────────────────────────────────────────
-        agents_invoked.append("RetrieverAgent")
-        _t = time.time()
-        retrieve_result = await kernel.invoke(
-            plugin_name="Retriever",
-            function_name="retrieve",
-            arguments=KernelArguments(
-                subtask=subtask,
-                company_filter=req.company_filter or "",
-                fiscal_year_filter=req.fiscal_year_filter or "",
-            ),
-        )
-        metrics.record_agent_latency("RetrieverAgent", int((time.time() - _t) * 1000))
-        chunks_json = str(retrieve_result)
+    # ── Retriever + Analyst — all subtasks in parallel ────────────────────────
+    agents_invoked.append("RetrieverAgent")
+    agents_invoked.append("AnalystAgent")
 
+    async def _run_subtask_sync(subtask: str) -> dict | None:
         try:
+            retrieve_result = await kernel.invoke(
+                plugin_name="Retriever",
+                function_name="retrieve",
+                arguments=KernelArguments(
+                    subtask=subtask,
+                    company_filter=req.company_filter or "",
+                    fiscal_year_filter=req.fiscal_year_filter or "",
+                ),
+            )
+            chunks_json = str(retrieve_result)
             chunks_data = json.loads(chunks_json)
-        except json.JSONDecodeError:
-            chunks_data = []
+        except Exception:
+            return None
 
         if not chunks_data:
-            continue
-
-        retrievals[subtask] = [c.get("chunk_id", "") for c in chunks_data]
-
-        # ── AnalystAgent ─────────────────────────────────────────────────────
-        agents_invoked.append("AnalystAgent")
-        _t = time.time()
-        analysis_result = await kernel.invoke(
-            plugin_name="Analyst",
-            function_name="analyze",
-            arguments=KernelArguments(subtask=subtask, chunks_json=chunks_json),
-        )
-        metrics.record_agent_latency("AnalystAgent", int((time.time() - _t) * 1000))
+            return None
 
         try:
+            analysis_result = await kernel.invoke(
+                plugin_name="Analyst",
+                function_name="analyze",
+                arguments=KernelArguments(subtask=subtask, chunks_json=chunks_json),
+            )
             analysis = json.loads(str(analysis_result))
-        except json.JSONDecodeError:
+        except Exception:
             analysis = {"kpis": [], "claims": []}
 
-        claims = analysis.get("claims", [])
-        all_claims.extend(claims)
-        subtask_results.append(
-            {"subtask": subtask, "kpis": analysis.get("kpis", []), "claims": claims}
-        )
+        return {
+            "subtask": subtask,
+            "chunks": [c.get("chunk_id", "") for c in chunks_data],
+            "claims": analysis.get("claims", []),
+            "kpis": analysis.get("kpis", []),
+        }
+
+    _t = time.time()
+    parallel_results = await asyncio.gather(*[_run_subtask_sync(s) for s in subtasks])
+    ra_ms = int((time.time() - _t) * 1000)
+    metrics.record_agent_latency("RetrieverAgent", ra_ms)
+    metrics.record_agent_latency("AnalystAgent", ra_ms)
+
+    for result in parallel_results:
+        if result:
+            all_claims.extend(result["claims"])
+            subtask_results.append(
+                {"subtask": result["subtask"], "kpis": result["kpis"], "claims": result["claims"]}
+            )
+            retrievals[result["subtask"]] = result["chunks"]
 
     # ── AuditorAgent ─────────────────────────────────────────────────────────
     agents_invoked.append("AuditorAgent")

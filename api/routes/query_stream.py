@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -32,6 +33,72 @@ def _event(name: str, data: dict) -> str:
     return f"data: {payload}\n\n"
 
 
+async def _run_subtask(
+    kernel,
+    subtask: str,
+    company_filter: str,
+    fiscal_year_filter: str,
+) -> tuple[list[tuple[str, dict]], dict | None]:
+    """
+    Run Retriever + Analyst for one subtask.
+    Returns (sse_events, result_dict | None).
+    Runs fully async so multiple subtasks can be gather()ed in parallel.
+    """
+    events: list[tuple[str, dict]] = []
+
+    # ── RetrieverAgent ────────────────────────────────────────────────
+    try:
+        retrieve_result = await kernel.invoke(
+            plugin_name="Retriever",
+            function_name="retrieve",
+            arguments=KernelArguments(
+                subtask=subtask,
+                company_filter=company_filter,
+                fiscal_year_filter=fiscal_year_filter,
+            ),
+        )
+        chunks_json = str(retrieve_result)
+        try:
+            chunks_data = json.loads(chunks_json)
+        except json.JSONDecodeError:
+            chunks_data = []
+    except Exception as exc:
+        events.append(
+            ("error", {"stage": "RetrieverAgent", "subtask": subtask, "detail": str(exc)})
+        )
+        return events, None
+
+    events.append(("retrieved", {"subtask": subtask, "chunks": len(chunks_data)}))
+
+    if not chunks_data:
+        return events, None
+
+    # ── AnalystAgent ──────────────────────────────────────────────────
+    try:
+        analysis_result = await kernel.invoke(
+            plugin_name="Analyst",
+            function_name="analyze",
+            arguments=KernelArguments(subtask=subtask, chunks_json=chunks_json),
+        )
+        try:
+            analysis = json.loads(str(analysis_result))
+        except json.JSONDecodeError:
+            analysis = {"kpis": [], "claims": []}
+    except Exception as exc:
+        events.append(("error", {"stage": "AnalystAgent", "subtask": subtask, "detail": str(exc)}))
+        return events, None
+
+    claims = analysis.get("claims", [])
+    events.append(("analyzed", {"subtask": subtask, "claims": len(claims)}))
+
+    return events, {
+        "subtask": subtask,
+        "chunks": [c.get("chunk_id", "") for c in chunks_data],
+        "claims": claims,
+        "kpis": analysis.get("kpis", []),
+    }
+
+
 @router.post("/stream")
 async def run_query_stream(req: QueryRequest):
     async def generate():
@@ -44,7 +111,7 @@ async def run_query_stream(req: QueryRequest):
         log.info("stream.start", task_id=task_id[:8], query=req.query[:80])
         yield _event("start", {"task_id": task_id, "query": req.query})
 
-        # ── PlannerAgent — direct LLM call, no SK tool injection ────────────
+        # ── PlannerAgent — direct LLM call, no SK tool injection ─────
         agents_invoked.append("PlannerAgent")
         _t = time.time()
         try:
@@ -62,70 +129,45 @@ async def run_query_stream(req: QueryRequest):
         log.info("stream.planned", task_id=task_id[:8], subtasks=len(subtasks))
         yield _event("planned", {"subtasks": subtasks})
 
+        # ── Retriever + Analyst — all subtasks in parallel ────────────
+        agents_invoked.append("RetrieverAgent")
+        agents_invoked.append("AnalystAgent")
+        _t = time.time()
+
+        subtask_coros = [
+            _run_subtask(
+                kernel,
+                subtask,
+                req.company_filter or "",
+                req.fiscal_year_filter or "",
+            )
+            for subtask in subtasks
+        ]
+        subtask_outputs = await asyncio.gather(*subtask_coros)
+
         all_claims: list[dict] = []
         subtask_results: list[dict] = []
         retrievals: dict[str, list[str]] = {}
 
-        for subtask in subtasks:
-            # ── RetrieverAgent ───────────────────────────────────────────────
-            agents_invoked.append("RetrieverAgent")
-            _t = time.time()
-            try:
-                retrieve_result = await kernel.invoke(
-                    plugin_name="Retriever",
-                    function_name="retrieve",
-                    arguments=KernelArguments(
-                        subtask=subtask,
-                        company_filter=req.company_filter or "",
-                        fiscal_year_filter=req.fiscal_year_filter or "",
-                    ),
+        for events, result in subtask_outputs:
+            for ev_name, ev_data in events:
+                yield _event(ev_name, ev_data)
+            if result:
+                all_claims.extend(result["claims"])
+                subtask_results.append(
+                    {
+                        "subtask": result["subtask"],
+                        "kpis": result["kpis"],
+                        "claims": result["claims"],
+                    }
                 )
-                chunks_json = str(retrieve_result)
-                try:
-                    chunks_data = json.loads(chunks_json)
-                except json.JSONDecodeError:
-                    chunks_data = []
-            except Exception as exc:
-                yield _event(
-                    "error", {"stage": "RetrieverAgent", "subtask": subtask, "detail": str(exc)}
-                )
-                continue
-            metrics.record_agent_latency("RetrieverAgent", int((time.time() - _t) * 1000))
+                retrievals[result["subtask"]] = result["chunks"]
 
-            retrievals[subtask] = [c.get("chunk_id", "") for c in chunks_data]
-            yield _event("retrieved", {"subtask": subtask, "chunks": len(chunks_data)})
+        ra_ms = int((time.time() - _t) * 1000)
+        metrics.record_agent_latency("RetrieverAgent", ra_ms)
+        metrics.record_agent_latency("AnalystAgent", ra_ms)
 
-            if not chunks_data:
-                continue
-
-            # ── AnalystAgent ─────────────────────────────────────────────────
-            agents_invoked.append("AnalystAgent")
-            _t = time.time()
-            try:
-                analysis_result = await kernel.invoke(
-                    plugin_name="Analyst",
-                    function_name="analyze",
-                    arguments=KernelArguments(subtask=subtask, chunks_json=chunks_json),
-                )
-                try:
-                    analysis = json.loads(str(analysis_result))
-                except json.JSONDecodeError:
-                    analysis = {"kpis": [], "claims": []}
-            except Exception as exc:
-                yield _event(
-                    "error", {"stage": "AnalystAgent", "subtask": subtask, "detail": str(exc)}
-                )
-                continue
-            metrics.record_agent_latency("AnalystAgent", int((time.time() - _t) * 1000))
-
-            claims = analysis.get("claims", [])
-            all_claims.extend(claims)
-            subtask_results.append(
-                {"subtask": subtask, "kpis": analysis.get("kpis", []), "claims": claims}
-            )
-            yield _event("analyzed", {"subtask": subtask, "claims": len(claims)})
-
-        # ── AuditorAgent ─────────────────────────────────────────────────────
+        # ── AuditorAgent ──────────────────────────────────────────────
         log.info("stream.auditor_start", task_id=task_id[:8], total_claims=len(all_claims))
         agents_invoked.append("AuditorAgent")
         _t = time.time()
@@ -146,9 +188,11 @@ async def run_query_stream(req: QueryRequest):
             return
         metrics.record_agent_latency("AuditorAgent", int((time.time() - _t) * 1000))
         log.info(
-            "stream.audited", task_id=task_id[:8], verified=len(verified), uncertain=len(uncertain)
+            "stream.audited",
+            task_id=task_id[:8],
+            verified=len(verified),
+            uncertain=len(uncertain),
         )
-
         yield _event(
             "audited",
             {
@@ -158,7 +202,7 @@ async def run_query_stream(req: QueryRequest):
             },
         )
 
-        # ── ComparatorAgent ──────────────────────────────────────────────────
+        # ── ComparatorAgent ───────────────────────────────────────────
         agents_invoked.append("ComparatorAgent")
         _t = time.time()
         try:
@@ -178,10 +222,9 @@ async def run_query_stream(req: QueryRequest):
             yield _event("error", {"stage": "ComparatorAgent", "detail": str(exc)})
             comparison = {"deltas": [], "cross_document_claims": [], "summary": ""}
         metrics.record_agent_latency("ComparatorAgent", int((time.time() - _t) * 1000))
-
         yield _event("compared", {"deltas": len(comparison.get("deltas", []))})
 
-        # ── SynthesizerAgent — direct LLM call, no SK tool injection ─────────
+        # ── SynthesizerAgent — direct LLM call ────────────────────────
         log.info("stream.synthesizer_start", task_id=task_id[:8])
         agents_invoked.append("SynthesizerAgent")
         _t = time.time()
