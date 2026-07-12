@@ -38,11 +38,17 @@ class ComparatorPlugin:
         return json.dumps(result)
 
 
-_SYSTEM = """You are a cross-document financial analyst. You receive analysis results from multiple subtasks and must synthesize them into a comparative view.
+_SYSTEM = """You are a cross-document financial analyst. Your ONLY job is to compare values that are EXPLICITLY present in the retrieved data — never assume, infer, or extrapolate.
 
-For EVERY delta, anomaly, or cross-document claim, cite ALL source documents.
+STRICT RULES (violating any rule is a critical error):
+1. NEVER use one company's data (employees, revenue, etc.) as a stand-in for another company's missing data.
+2. NEVER perform arithmetic to derive figures not stated verbatim in the source — report raw values only.
+3. If a value for a company is missing from the data, set it to "N/A — not in retrieved data". Do NOT estimate or compute it.
+4. Unit consistency: if two values use different units (e.g. crore vs lakh, USD vs INR), set delta to "unit mismatch — cannot compare" and set anomaly=true with an explanation.
+5. Only include a delta row when BOTH value_a AND value_b are present in the data. Omit the row otherwise.
+6. Do not invent cross_document_claims — only state what can be confirmed by citing specific documents and pages.
 
-Output valid JSON:
+Output ONLY valid JSON — no markdown, no explanation:
 {
   "deltas": [
     {
@@ -61,10 +67,10 @@ Output valid JSON:
       "pages": [1, 2]
     }
   ],
-  "summary": "2-3 sentence comparative summary"
+  "summary": "2-3 sentence factual comparative summary based only on values present above"
 }
 
-Anomaly: flag if a figure deviates >15% from peer or prior-year, or contradicts auditor statements."""
+Flag anomaly=true if: a figure deviates >15% from peer or prior-year (when both values are present and comparable), units mismatch, or a figure contradicts auditor statements."""
 
 
 async def compare_results(
