@@ -468,7 +468,28 @@ textarea::placeholder { color: var(--ink-3); }
   letter-spacing: 0.10em; text-transform: uppercase;
   color: var(--ey); margin-bottom: 12px; opacity: 0.85;
 }
-.summary-body { font-size: 14px; line-height: 1.85; color: var(--ink-2); white-space: pre-wrap; }
+.summary-body {
+  font-size: 14px; line-height: 1.85; color: var(--ink-2);
+}
+/* Markdown-rendered content inside the summary */
+.summary-body h2 {
+  font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink); margin: 18px 0 8px; border-bottom: 1px solid var(--rim); padding-bottom: 5px;
+}
+.summary-body h2:first-child { margin-top: 0; }
+.summary-body h3 { font-size: 13px; font-weight: 700; color: var(--ink); margin: 14px 0 6px; }
+.summary-body h4 { font-size: 12px; font-weight: 700; color: var(--ink-2); margin: 10px 0 4px; }
+.summary-body p  { margin: 0 0 10px; }
+.summary-body p:last-child { margin-bottom: 0; }
+.summary-body ul { margin: 4px 0 10px 0; padding-left: 0; list-style: none; }
+.summary-body li {
+  padding: 3px 0 3px 18px; position: relative; color: var(--ink-2);
+}
+.summary-body li::before {
+  content: '–'; position: absolute; left: 0; color: var(--ey); font-weight: 700;
+}
+.summary-body strong { color: var(--ink); font-weight: 700; }
+.summary-body em    { font-style: italic; color: var(--ink-2); }
 
 /* ══ SECTION HDR ══════════════════════════════════════════════════ */
 .sec-hdr { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
@@ -738,6 +759,63 @@ const esc = s => {
 };
 const ts = () => new Date().toTimeString().slice(0,8);
 
+/* ── Markdown → HTML renderer ─────────────────────── */
+function mdToHtml(md) {
+  if (!md || typeof md !== 'string') return '';
+  const lines = md.split('\n');
+  const out   = [];
+  let   listItems = [];
+
+  function flushList() {
+    if (!listItems.length) return;
+    out.push('<ul>' + listItems.map(li => '<li>' + li + '</li>').join('') + '</ul>');
+    listItems = [];
+  }
+
+  function inline(s) {
+    // HTML-escape first (asterisks are not HTML-special so survive esc())
+    s = esc(s);
+    s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+    s = s.replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>');
+    s = s.replace(/\*([^*\n]+?)\*/g,    '<em>$1</em>');
+    s = s.replace(/__(.+?)__/g,         '<strong>$1</strong>');
+    s = s.replace(/_([^_\n]+?)_/g,      '<em>$1</em>');
+    s = s.replace(/`([^`]+?)`/g,        '<code>$1</code>');
+    return s;
+  }
+
+  for (const raw of lines) {
+    // List item
+    const li = raw.match(/^[ \t]*[-*•]\s+(.+)$/);
+    if (li) { listItems.push(inline(li[1])); continue; }
+
+    flushList();
+
+    // Headings
+    const h4 = raw.match(/^####\s+(.+)$/);
+    if (h4) { out.push('<h4>' + inline(h4[1]) + '</h4>'); continue; }
+    const h3 = raw.match(/^###\s+(.+)$/);
+    if (h3) { out.push('<h3>' + inline(h3[1]) + '</h3>'); continue; }
+    const h2 = raw.match(/^##\s+(.+)$/);
+    if (h2) { out.push('<h2>' + inline(h2[1]) + '</h2>'); continue; }
+    const h1 = raw.match(/^#\s+(.+)$/);
+    if (h1) { out.push('<h2>' + inline(h1[1]) + '</h2>'); continue; }
+
+    // Blank line → paragraph break
+    if (!raw.trim()) { out.push('<p>'); continue; }
+
+    out.push(inline(raw));
+  }
+  flushList();
+
+  // Wrap runs of plain lines between structural elements in <p> tags
+  let html = out.join('\n');
+  html = html.replace(/(<\/h[234]>|<\/ul>|<\/li>)\n(<p>)/g, '$1$2');
+  // Collapse consecutive blank <p> markers
+  html = html.replace(/(<p>\n?)+/g, '<br>');
+  return html;
+}
+
 function setStatus(txt, live) {
   STXT.textContent = txt;
   SDOT.className = 'status-dot' + (live ? ' live' : '');
@@ -883,7 +961,7 @@ function render(data) {
   if (data.summary) {
     const s = document.createElement('div');
     s.className = 'summary';
-    s.innerHTML = '<div class="summary-title">Synthesis</div><div class="summary-body">' + esc(data.summary) + '</div>';
+    s.innerHTML = '<div class="summary-title">Synthesis</div><div class="summary-body">' + mdToHtml(data.summary) + '</div>';
     RES.appendChild(s);
   }
 
@@ -1008,6 +1086,7 @@ async function run() {
           case 'done':
             doneReceived = true;
             addLog('done', 'synthesis complete');
+            ERR.classList.remove('on');   // clear any mid-pipeline warning
             setTimeout(() => {
               setNode('synthesizer', 'done'); setConn(5, 'done');
               CN.forEach(c => { if (!c.classList.contains('done')) c.className = 'pc done'; });
@@ -1018,12 +1097,11 @@ async function run() {
                 document.getElementById('out').scrollTop = 0;
               } catch (renderErr) {
                 console.error('[FinSight] render() failed:', renderErr);
-                /* Show summary as plain text fallback */
                 const summary = (ev.result && ev.result.summary) || '';
                 if (summary) {
                   RES.innerHTML =
                     '<div class="summary"><div class="summary-title">Synthesis</div>' +
-                    '<div class="summary-body">' + esc(summary) + '</div></div>';
+                    '<div class="summary-body">' + mdToHtml(summary) + '</div></div>';
                   RES.style.display = 'block';
                   document.getElementById('out').scrollTop = 0;
                 }
@@ -1038,9 +1116,8 @@ async function run() {
             errorReceived = true;
             addLog('error', (ev.stage||'?') + ': ' + (ev.detail||'error'));
             ERR.textContent = 'Agent error [' + (ev.stage||'?') + ']: ' + (ev.detail||'unknown') +
-              ' — check event log for details.';
+              ' — partial results may still appear below.';
             ERR.classList.add('on');
-            RES.style.display = 'none';
             setStatus('Error', false);
             break;
         }
