@@ -20,18 +20,25 @@ class AuditorPlugin:
     @kernel_function(
         name="audit",
         description=(
-            "Verify every claim against its supporting snippet. "
+            "Verify every claim against its supporting snippet and the original query. "
             "Returns JSON with verified, uncertain, and unverifiable claim lists."
         ),
     )
-    async def audit(self, claims_json: str, confidence_threshold: str = "0.65") -> str:
+    async def audit(
+        self,
+        claims_json: str,
+        confidence_threshold: str = "0.65",
+        original_query: str = "",
+    ) -> str:
         try:
             claims = json.loads(claims_json)
         except json.JSONDecodeError:
             return json.dumps({"verified": [], "uncertain": [], "unverifiable": []})
 
         threshold = float(confidence_threshold)
-        verified, uncertain, unverifiable = await audit_claims(claims, {}, threshold)
+        verified, uncertain, unverifiable = await audit_claims(
+            claims, {}, threshold, original_query=original_query
+        )
         return json.dumps(
             {
                 "verified": [c.to_dict() for c in verified],
@@ -42,32 +49,42 @@ class AuditorPlugin:
 
 
 # ── Batch entailment prompt ───────────────────────────────────────────────────
-_BATCH_SYSTEM = """You are a compliance auditor. For each claim, check if the snippet ENTAILS it.
+_BATCH_SYSTEM = """You are a compliance auditor. For each claim, apply two checks in order.
 
-Output ONLY a JSON array with one object per claim in the SAME ORDER as input. No markdown fences, no explanation outside the array.
+CHECK 1 — FABRICATED EVENT DETECTION (very narrow rule — apply rarely):
+Mark "unverifiable" ONLY when ALL three conditions hold simultaneously:
+  1. The user_query contains an explicit ACTION VERB describing a SPECIFIC TRANSACTION or STATEMENT
+     (the verb must be one of: acquiring, acquired, merge with, merged with, said about, announced
+     partnership with, joint venture with) directed at a named EXTERNAL company.
+  2. The named external company is NOT one of Infosys, TCS, Wipro, HCL, Tech Mahindra.
+  3. The claim's content is about a completely different topic (e.g. revenue, margins, headcount)
+     that has nothing to do with that specific transaction.
+Examples where CHECK 1 fires → "unverifiable":
+  - Query: "CEO said about acquiring Google" + Claim about "revenue growth" ✓ all 3 conditions
+  - Query: "Infosys merger with Samsung" + Claim about "employee count" ✓ all 3 conditions
+Examples where CHECK 1 does NOT fire → proceed to Check 2:
+  - Query: "Compare headcount with Microsoft and Apple" — no action verb → skip CHECK 1
+  - Query: "Infosys revenue FY2030" — no external company named → skip CHECK 1
+  - Query: "TCS acquiring Wipro" — Wipro IS an Indian IT company → skip CHECK 1
 
-Each object must have exactly two keys:
-  "audit_status": "verified" | "uncertain" | "unverifiable"
-  "reason": "one sentence"
+CHECK 2 — SNIPPET ENTAILMENT:
+  - "verified":      snippet directly states or clearly implies the claim, AND confidence >= threshold
+  - "uncertain":     snippet weakly or partially supports, OR confidence < threshold
+  - "unverifiable":  snippet absent, irrelevant, or contradicts the claim
 
-Rules:
-- "verified":      snippet directly states or clearly implies the claim, AND confidence >= threshold
-- "uncertain":     snippet weakly or partially supports the claim, OR confidence < threshold
-- "unverifiable":  snippet is absent, irrelevant, or contradicts the claim
-
-Example output (2 claims):
-[
-  {"audit_status": "verified",   "reason": "Snippet directly states the revenue figure."},
-  {"audit_status": "uncertain",  "reason": "Snippet mentions the topic but does not confirm the value."}
-]"""
+Output ONLY a JSON array, one object per claim, SAME ORDER as input. No markdown, no explanation.
+Each object: {"audit_status": "verified"|"uncertain"|"unverifiable", "reason": "one sentence"}"""
 
 
-async def _batch_entailment(claims_data: list[dict], threshold: float) -> list[dict]:
+async def _batch_entailment(
+    claims_data: list[dict], threshold: float, original_query: str = ""
+) -> list[dict]:
     """Audit all claims in one LLM call — O(1) calls instead of O(N)."""
     payload = json.dumps(
         [
             {
                 "index": i,
+                "user_query": original_query,
                 "claim": c.get("claim", ""),
                 "snippet": c.get("supporting_text", "")[:400],
                 "confidence": round(float(c.get("confidence", 0.5)), 2),
@@ -84,7 +101,7 @@ async def _batch_entailment(claims_data: list[dict], threshold: float) -> list[d
             {"role": "user", "content": payload},
         ],
         temperature=0.0,
-        max_tokens=min(250 * len(claims_data), 4096),
+        max_tokens=min(200 * len(claims_data), 4096),
     )
 
     raw = content.strip()
@@ -113,6 +130,7 @@ async def audit_claims(
     claims: list[dict[str, Any]],
     chunks_by_subtask: dict[str, list[dict[str, Any]]],
     confidence_threshold: float | None = None,
+    original_query: str = "",
 ) -> tuple[list[AuditedClaim], list[AuditedClaim], list[AuditedClaim]]:
     """
     Returns (verified, uncertain, unverifiable).
@@ -136,7 +154,9 @@ async def audit_claims(
     # Batch audit claims that have snippets
     verdicts: list[dict] = []
     if needs_audit:
-        verdicts = await _batch_entailment([c for _, c in needs_audit], threshold)
+        verdicts = await _batch_entailment(
+            [c for _, c in needs_audit], threshold, original_query=original_query
+        )
 
     # Build AuditedClaim objects from batch results
     for (_, claim_data), verdict in zip(needs_audit, verdicts):
