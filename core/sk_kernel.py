@@ -27,31 +27,54 @@ Output: ["Infosys operating margin FY2022", "Infosys operating margin FY2023",
 
 User Task: {user_task}"""
 
-SYNTHESIZER_PROMPT = """You are a financial report writer.
-Assemble a structured, professional analysis report from the evidence below.
+SYNTHESIZER_PROMPT = """You are a financial report writer. Assemble a structured professional report from the verified evidence below.
 
-Query: {query}
-Task ID: {task_id}
+<query>{query}</query>
+<task_id>{task_id}</task_id>
 
-Verified Claims (include unmarked):
+<verified_claims>
 {verified_claims}
+</verified_claims>
 
-Uncertain Claims (prefix each with [UNCERTAIN]):
+<uncertain_claims>
 {uncertain_claims}
+</uncertain_claims>
 
-Comparative Analysis:
+<comparative_analysis>
 {comparison}
+</comparative_analysis>
 
-Rules:
-- Do NOT include any figure, claim, or statistic absent from the lists above
-- Do NOT perform arithmetic, derive new numbers, or infer values — only report what is explicitly stated
-- If a company's data is missing or marked N/A, state that it is unavailable rather than estimating
-- Every figure must cite its source document and page in parentheses
-- Use these exact section headers: ## Executive Summary, ## Key Findings, ## Comparative Analysis, ## Risk Flags
-- Use bullet points (- ) for lists of findings
-- Mark uncertain claims with [UNCERTAIN] inline
-- Write concise professional prose — 3-5 sentences per section
-- Output GitHub-flavoured Markdown, NOT JSON and NOT plain text"""
+<output_rules>
+
+WHAT YOU MUST INCLUDE:
+- Only figures and statements that appear verbatim in the sections above.
+- Every figure must be followed immediately by its source document and page in parentheses.
+- Every uncertain claim must be prefixed with [UNCERTAIN] inline.
+
+WHAT YOU MUST OMIT — these are hard stops, not style preferences:
+
+1. OMIT ALL DERIVED FIGURES FROM YOUR INPUT.
+   Even if the sections above contain a derived or computed figure, do not reproduce it. Derived figures include: revenue per employee, any "per unit" metric, percentage changes computed from two raw values, currency-converted equivalents (e.g. "$30B (equivalent to ₹267,021 crore)"), and scale-converted equivalents (e.g. "₹926,240 million (₹92,624 crore)"). When you encounter such a figure in your input, skip it and note only that the raw inputs are available.
+
+2. OMIT UNCERTAIN CLAIMS THAT ARE THEMSELVES DERIVED FIGURES.
+   If an uncertain claim's content is a derived or computed value — identifiable by language such as "calculated," "derived," "computed," "equivalent to," "resulting in," "yields," or "leading to" — omit the entire claim. Do not reproduce it even with the [UNCERTAIN] prefix. Instead write a single sentence stating that the underlying raw inputs are available from the source but the derived metric is not stated in the document.
+
+3. OMIT FIGURES FLAGGED FOR UNIT OR CURRENCY MISMATCH.
+   If the comparative analysis marks a comparison as a unit or currency mismatch anomaly, report the anomaly flag and the raw stated values in their original units only. Do not restate either value in a converted unit.
+
+4. DO NOT PERFORM ARITHMETIC.
+   Do not divide, multiply, add, or subtract any two figures. Do not convert currencies. Do not convert scales. Do not compute percentage changes. This applies to figures in your input as well as figures you might generate yourself.
+
+5. MISSING OR N/A DATA.
+   If a company's data is recorded as N/A or missing, state explicitly that the data is unavailable. Do not estimate, substitute, or omit the gap silently.
+
+OUTPUT FORMAT:
+- Section headers (exact): ## Executive Summary, ## Key Findings, ## Comparative Analysis, ## Risk Flags
+- Use bullet points (- ) for findings lists
+- 3-5 sentences of concise professional prose per section
+- GitHub-flavoured Markdown — not JSON, not plain text
+
+</output_rules>"""
 
 # Legacy SK template aliases kept so nothing importing the old names breaks
 _PLANNER_PROMPT = PLANNER_PROMPT
