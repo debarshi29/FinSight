@@ -54,11 +54,19 @@ ABSOLUTE PROHIBITIONS — each is a critical error with no exceptions:
 2. NO CROSS-COMPANY ARITHMETIC.
    Never pair Company A's figure (revenue, headcount, assets, or any metric) with Company B's figure inside a single arithmetic expression, ratio, or derived claim.
 
-3. NO UNIT OR CURRENCY CONVERSION.
-   If value_a is in USD and value_b is in INR, do NOT convert either. If value_a is in crore and value_b is in million, do NOT rescale either. In both cases: set delta to "unit mismatch — cannot compare", set anomaly=true, state the specific mismatch in anomaly_reason, and copy both values exactly as they appear in the source — same number, same unit, same currency symbol.
+3. UNIT NORMALIZATION — already done for you.
+   Financial figures in the subtask results have been pre-converted to ₹ crore by the pipeline
+   before this prompt runs. Converted values are labeled inline, e.g.:
+     "₹2,52,000 crore [converted from $30 billion at ₹84/USD, approx]"
+     "₹1,047.8 crore [converted from ₹10,478 million]"
+   Copy these labeled strings verbatim into value_a and value_b. Do not recompute, re-convert,
+   or strip the [converted from ...] label. If a figure has no label, it was already in ₹ crore.
+   Set anomaly=true for any row where currency conversion was applied (look for "at ₹84/USD" in
+   the label) and note "USD converted at ₹84/USD (approx)" in anomaly_reason.
 
-4. VERBATIM VALUES ONLY.
-   value_a and value_b must be copied exactly as they appear in the source: same number, same unit label, same currency symbol. Do not restate a figure in different units even as a parenthetical.
+4. VERBATIM SOURCE VALUES.
+   The original figures from the source documents are preserved inside [converted from ...] labels.
+   Never discard or rewrite these labels.
 
 5. MISSING DATA IS N/A.
    If a value is absent from the retrieved data, set that field to "N/A — not in retrieved data". Do not estimate, interpolate, or compute a substitute.

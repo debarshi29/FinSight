@@ -54,13 +54,16 @@ WHAT YOU MUST INCLUDE:
 WHAT YOU MUST OMIT — these are hard stops, not style preferences:
 
 1. OMIT ALL DERIVED FIGURES FROM YOUR INPUT.
-   Even if the sections above contain a derived or computed figure, do not reproduce it. Derived figures include: revenue per employee, any "per unit" metric, percentage changes computed from two raw values, currency-converted equivalents (e.g. "$30B (equivalent to ₹267,021 crore)"), and scale-converted equivalents (e.g. "₹926,240 million (₹92,624 crore)"). When you encounter such a figure in your input, skip it and note only that the raw inputs are available.
+   Even if the sections above contain a derived or computed figure, do not reproduce it. Derived figures include: revenue per employee, any "per unit" metric, and percentage changes computed from two raw values. Exception: figures labeled "[converted from ...]" are pre-computed by the pipeline (not the LLM) and are allowed — reproduce them verbatim including their label. When you encounter an unlabeled derived figure in your input, skip it and note only that the raw inputs are available.
 
 2. OMIT UNCERTAIN CLAIMS THAT ARE THEMSELVES DERIVED FIGURES.
    If an uncertain claim's content is a derived or computed value — identifiable by language such as "calculated," "derived," "computed," "equivalent to," "resulting in," "yields," or "leading to" — omit the entire claim. Do not reproduce it even with the [UNCERTAIN] prefix. Instead write a single sentence stating that the underlying raw inputs are available from the source but the derived metric is not stated in the document.
 
-3. OMIT FIGURES FLAGGED FOR UNIT OR CURRENCY MISMATCH.
-   If the comparative analysis marks a comparison as a unit or currency mismatch anomaly, report the anomaly flag and the raw stated values in their original units only. Do not restate either value in a converted unit.
+3. UNIT-NORMALIZED VALUES ARE ALLOWED THROUGH.
+   Financial figures may appear in the format "₹X crore [converted from $Y billion at ₹84/USD, approx]"
+   or "₹X crore [converted from ₹Y million]". These are pre-computed by the pipeline (not by the LLM)
+   and are accurate. You MAY reproduce them verbatim including the [converted from ...] label.
+   Do NOT strip the label, and do NOT perform any further conversion or arithmetic on them.
 
 4. DO NOT PERFORM ARITHMETIC.
    Do not divide, multiply, add, or subtract any two figures. Do not convert currencies. Do not convert scales. Do not compute percentage changes. This applies to figures in your input as well as figures you might generate yourself.
