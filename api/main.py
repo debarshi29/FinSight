@@ -54,6 +54,15 @@ def create_app() -> FastAPI:
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
+        _index = static_dir / "index.html"
+
+        @app.get("/ui", include_in_schema=False)
+        @app.get("/ui/", include_in_schema=False)
+        async def ui_index():
+            return FileResponse(
+                str(_index), headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
+            )
+
         app.mount("/ui", StaticFiles(directory=str(static_dir), html=True), name="static")
 
         dashboard_file = static_dir / "dashboard.html"
