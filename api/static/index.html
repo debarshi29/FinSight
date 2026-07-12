@@ -77,7 +77,7 @@ body {
 .brand-copy { display: flex; flex-direction: column; gap: 2px; }
 .brand-name { font-size: 15px; font-weight: 800; color: var(--ink); letter-spacing: -0.025em; line-height: 1; }
 .brand-name em { color: var(--ey); font-style: normal; }
-.brand-sub { font-size: 9.5px; color: var(--ink-3); letter-spacing: 0.07em; text-transform: uppercase; }
+.brand-sub { font-size: 10px; color: var(--ink-3); letter-spacing: 0.07em; text-transform: uppercase; }
 .topbar-end {
   display: flex; align-items: center; gap: 12px; justify-content: flex-end; padding: 0 22px;
 }
@@ -169,7 +169,7 @@ textarea::placeholder { color: var(--ink-3); }
   width: 100%; padding: 11px 16px;
   background: var(--ey); border: none; border-radius: var(--r);
   color: var(--ey-dk); cursor: pointer;
-  font-family: var(--sans); font-size: 12.5px; font-weight: 800;
+  font-family: var(--sans); font-size: 13px; font-weight: 800;
   letter-spacing: 0.05em; text-transform: uppercase;
   box-shadow: 0 1px 10px rgba(255,230,0,0.14);
   transition: filter 0.12s, transform 0.1s, box-shadow 0.12s;
@@ -201,7 +201,7 @@ textarea::placeholder { color: var(--ink-3); }
   background: transparent; border: none; border-radius: var(--r);
   border-left: 2px solid transparent;
   color: var(--ink-3); cursor: pointer;
-  font-family: var(--sans); font-size: 12.5px; line-height: 1.55;
+  font-family: var(--sans); font-size: 13px; line-height: 1.55;
   padding: 8px 12px 8px 10px; text-align: left;
   transition: color 0.1s, background 0.1s, border-color 0.1s;
 }
@@ -240,7 +240,7 @@ textarea::placeholder { color: var(--ink-3); }
 /* Step number chip */
 .pn-num {
   position: absolute; top: -10px; left: 50%; transform: translateX(-50%);
-  font-family: var(--mono); font-size: 8.5px; font-weight: 700;
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
   background: var(--surface); color: var(--ink-3);
   border: 1px solid var(--rim); border-radius: 8px;
   padding: 1px 6px; white-space: nowrap;
@@ -317,7 +317,7 @@ textarea::placeholder { color: var(--ink-3); }
   padding: 6px 28px 5px;
   border-bottom: 1px solid var(--rim);
 }
-.console-head-lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); }
+.console-head-lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-3); }
 .console-close {
   background: none; border: none; cursor: pointer;
   color: var(--ink-3); font-size: 12px; line-height: 1;
@@ -367,7 +367,9 @@ textarea::placeholder { color: var(--ink-3); }
   justify-content: center; height: 100%; gap: 10px; text-align: center; padding: 40px;
   animation: fade-up 0.4s ease;
 }
-@keyframes fade-up { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+@keyframes fade-up  { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+@keyframes fade-out { from{opacity:1;transform:none} to{opacity:0;transform:translateY(-6px)} }
+.empty.leaving { animation: fade-out 0.2s ease forwards; pointer-events: none; }
 .empty-gfx { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; opacity: 0.18; }
 .empty-node {
   width: 50px; height: 50px; border: 1px solid var(--rim-2); border-radius: var(--r);
@@ -430,7 +432,7 @@ textarea::placeholder { color: var(--ink-3); }
 .stat-key  { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); margin-bottom: 3px; }
 .stat-desc { font-size: 12px; color: var(--ink-3); line-height: 1.4; }
 
-.lat { font-family: var(--mono); font-size: 11px; color: var(--ink-3); text-align: right; margin-top: -16px; margin-bottom: 22px; }
+.lat { font-family: var(--mono); font-size: 11px; color: var(--ink-3); text-align: right; margin-top: 4px; margin-bottom: 22px; }
 
 /* ══ PLAN ═════════════════════════════════════════════════════════ */
 .plan {
@@ -525,14 +527,14 @@ textarea::placeholder { color: var(--ink-3); }
 .tag.pg   { background: transparent; color: var(--ink-3); border-color: transparent; margin-left: 2px; }
 
 .claim-text {
-  font-size: 13.5px; line-height: 1.75; color: var(--ink);
+  font-size: 14px; line-height: 1.75; color: var(--ink);
   overflow-wrap: break-word; word-break: break-word;
 }
 
 /* Confidence ring */
 .conf { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; margin-top: 1px; }
 .conf svg { width: 52px; height: 52px; }
-.conf-lbl { font-family: var(--mono); font-size: 8.5px; color: var(--ink-3); letter-spacing: 0.07em; }
+.conf-lbl { font-family: var(--mono); font-size: 9px; color: var(--ink-3); letter-spacing: 0.07em; }
 
 /* Evidence */
 .evidence { padding: 11px 18px 15px; border-top: 1px solid var(--rim); background: var(--raised); }
@@ -995,7 +997,11 @@ function render(data) {
     RES.appendChild(list);
   }
 
-  EMPT.style.display = 'none';
+  /* Fade empty state out, then hide it once animation completes */
+  if (EMPT.style.display !== 'none') {
+    EMPT.classList.add('leaving');
+    setTimeout(() => { EMPT.style.display = 'none'; EMPT.classList.remove('leaving'); }, 220);
+  }
   RES.style.display  = 'block';
 }
 
@@ -1014,6 +1020,7 @@ async function run() {
   ERR.classList.remove('on');
   RES.style.display = 'none';
   RES.innerHTML = '';
+  EMPT.classList.remove('leaving');
   EMPT.style.display = 'none';
   resetPipeline();
 
@@ -1102,7 +1109,8 @@ async function run() {
             addLog('done', 'complete · ' + ((Date.now() - t0) / 1000).toFixed(1) + 's');
             ERR.classList.remove('on');
             setTimeout(() => {
-              setNode('synthesizer', 'done', '✓');
+              const vCount = (ev.result && ev.result.verified_claims) ? ev.result.verified_claims.length : '';
+              setNode('synthesizer', 'done', vCount || '✓');
               setConn(5, 'done');
               CN.forEach(c => { if (!c.classList.contains('done')) c.className = 'pc done'; });
               PHINT.textContent = 'Complete';
