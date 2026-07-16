@@ -361,6 +361,12 @@ All variables are optional except `GROQ_API_KEY`. Copy `.env.example` to `.env` 
 
 ---
 
+## Documentation
+
+A full LaTeX technical reference — architecture diagrams, module-by-module reference, data models, complete API/config tables, testing & evaluation methodology, and deployment topology — is available at [`docs/FinSight_Documentation.pdf`](docs/FinSight_Documentation.pdf) (source: [`docs/FinSight_Documentation.tex`](docs/FinSight_Documentation.tex)).
+
+---
+
 ## Repository Structure
 
 ```
