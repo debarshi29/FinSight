@@ -28,3 +28,6 @@ docs/*.log
 docs/*.lot
 docs/*.out
 docs/*.toc
+
+# Evaluation run artifacts
+evaluation/results/
