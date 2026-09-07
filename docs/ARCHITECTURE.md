@@ -75,7 +75,9 @@ This forces several design decisions that would be unnecessary in a looser syste
 
 ### Why SK Is Load-Bearing
 
-Semantic Kernel is not a thin API wrapper in this system. Removing it would require reimplementing plugin registration, context passing (KernelArguments), and prompt template rendering. Every agent hop goes through `kernel.invoke()`.
+Semantic Kernel is not a thin API wrapper in this system. Removing it would require reimplementing plugin registration, context passing (KernelArguments), and prompt template rendering.
+
+The four computational agents — Retriever, Analyst, Auditor, Comparator — are dispatched exclusively through `kernel.invoke(plugin_name=…)`. The Planner and Synthesizer are prompt-only roles: they are registered on the kernel as `KernelFunctionFromPrompt` (see `core/sk_kernel.py`), and `agents/router.py::plan_task` invokes the Planner in that pure SK form. The `POST /query` and `POST /query/stream` routes, however, call Planner and Synthesizer via `core/groq_client.chat_completion` / `chat_completion_hedged` using the *same* prompt templates — this keeps those two calls on the retry / reserve-endpoint / hedging path that lives in `groq_client`. Both invocation forms share one prompt definition; see [DECISIONS.md](DECISIONS.md) §2–3.
 
 ### Kernel Singleton
 
@@ -100,8 +102,8 @@ core/sk_kernel.py
 
 | Type | Plugin Name | File | Invocation |
 |---|---|---|---|
-| Semantic function | `Planner` | `core/sk_kernel.py` | `kernel.invoke("Planner", "decompose", KernelArguments(user_task=...))` |
-| Semantic function | `Synthesizer` | `core/sk_kernel.py` | `kernel.invoke("Synthesizer", "synthesize", KernelArguments(query=..., verified_claims=..., ...))` |
+| Semantic function | `Planner` | `core/sk_kernel.py` | registered as `KernelFunctionFromPrompt`; `agents/router.py::plan_task` calls `kernel.invoke("Planner", "decompose", …)`. The query routes render the same template and call `chat_completion` directly. |
+| Semantic function | `Synthesizer` | `core/sk_kernel.py` | registered as `KernelFunctionFromPrompt`; `agents/synthesizer.py::synthesize_report` renders the same template and calls `chat_completion` directly (retry / reserve path). |
 | Native plugin | `Retriever` | `agents/retriever.py` | `kernel.invoke("Retriever", "retrieve", KernelArguments(subtask=...))` |
 | Native plugin | `Analyst` | `agents/analyst.py` | `kernel.invoke("Analyst", "analyze", KernelArguments(subtask=..., chunks_json=...))` |
 | Native plugin | `Auditor` | `agents/auditor.py` | `kernel.invoke("Auditor", "audit", KernelArguments(claims_json=..., confidence_threshold=...))` |
@@ -219,11 +221,13 @@ score(chunk) = Σ_ranker  1 / (k + rank_i)
 
 | Section | Weight | Rationale |
 |---|---|---|
-| `audited_financials` | 1.0 | Highest — externally audited numbers |
-| `mda` | 0.8 | Management narrative; unaudited |
-| `notes` | 0.7 | Supplementary; context-dependent |
-| `letter` | 0.5 | Qualitative; promotional tone possible |
-| `unknown` | 0.4 | No section detected |
+| `audited_financials` | 1.00 | Highest — externally audited numbers |
+| `notes` | 0.85 | Part of the audited statements; note-specific detail |
+| `mda` | 0.65 | Management narrative; unaudited |
+| `unknown` | 0.50 | No section detected |
+| `letter` | 0.40 | Qualitative; promotional tone possible |
+
+*(Values as implemented in `ingestion/metadata.py::section_type_confidence_weight`.)*
 
 The composite confidence feeds directly into the AuditorAgent's three-tier classification.
 
@@ -386,11 +390,13 @@ Common patterns detected:
 
 | Route | Handler | Notes |
 |---|---|---|
-| `POST /query` | `api/routes/query.py` | Full 6-agent pipeline |
+| `POST /query` | `api/routes/query.py` | Full 6-agent pipeline, blocking |
+| `POST /query/stream` | `api/routes/query_stream.py` | Same pipeline, SSE progress events (`start … done`/`error`) |
 | `POST /ingest/upload` | `api/routes/ingest.py` | Multipart PDF, triggers ingestion pipeline |
 | `GET /eval/collection` | `api/routes/eval.py` | Qdrant vector count and status |
 | `GET /eval/audit-logs` | `api/routes/eval.py` | Lists saved audit log files |
 | `GET /eval/audit-logs/{id}` | `api/routes/eval.py` | Returns full audit log JSON |
+| `GET /metrics` | `api/routes/metrics.py` | `MetricsStore` snapshot (latency percentiles, per-agent timings, claim rates) |
 | `GET /health` | `api/main.py` | Liveness probe |
 
 ---
@@ -409,7 +415,7 @@ Optional: set `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env` to export traces to a Jaeg
 
 ### Qdrant
 
-Single collection: `financial_filings`. Vector size: 384 (matching `all-MiniLM-L6-v2`). Distance: Cosine.
+Single collection: `finsight_chunks` (configurable via `QDRANT_COLLECTION`). Vector size: 384 (matching `all-MiniLM-L6-v2`). Distance: Cosine.
 
 Payload fields indexed for filtering:
 - `company` (keyword)
@@ -475,13 +481,17 @@ finsight/
 │   └── tracer.py          # setup_tracing(), @traced decorator
 ├── tests/                 # pytest unit tests
 ├── docs/
+│   ├── README.md          # documentation index
+│   ├── HLD.md             # high-level design
+│   ├── LLD.md             # low-level design
 │   ├── ARCHITECTURE.md    # this file
-│   └── DECISIONS.md       # design decisions with reasoning
+│   ├── DECISIONS.md       # design decisions with reasoning
+│   └── RUNBOOK.md         # operations runbook
 ├── data/
 │   └── filings/           # seed PDFs placed here (git-ignored)
 ├── audit_logs/            # per-run JSON artifacts (git-ignored)
 ├── docker-compose.yml     # Qdrant + API services
-├── Dockerfile             # python:3.11-slim, uv install
+├── Dockerfile             # multi-stage: uv builder → slim non-root runtime
 ├── pyproject.toml         # deps + ruff config (line-length=100)
 └── .env.example           # all configurable settings
 ```
