@@ -363,7 +363,18 @@ All variables are optional except `GROQ_API_KEY`. Copy `.env.example` to `.env` 
 
 ## Documentation
 
-A full LaTeX technical reference — architecture diagrams, module-by-module reference, data models, complete API/config tables, testing & evaluation methodology, and deployment topology — is available at [`docs/FinSight_Documentation.pdf`](docs/FinSight_Documentation.pdf) (source: [`docs/FinSight_Documentation.tex`](docs/FinSight_Documentation.tex)).
+The [`docs/`](docs/) directory is indexed in [`docs/README.md`](docs/README.md). The core references:
+
+| Document | Purpose |
+|---|---|
+| [`docs/HLD.md`](docs/HLD.md) | High-Level Design — requirements, layered architecture, agent roles, request flows, risks, traceability |
+| [`docs/LLD.md`](docs/LLD.md) | Low-Level Design — module-by-module signatures and behaviour, data models, algorithms, error matrix, extension points |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Narrative deep-dive on each subsystem |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Numbered design-decision log with trade-offs |
+| [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | Operations runbook — run, observe, recover, harden |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Setup, CI checks, architecture invariants, how to add an agent |
+
+A full LaTeX technical reference is also available at [`docs/FinSight_Documentation.pdf`](docs/FinSight_Documentation.pdf) (source: [`docs/FinSight_Documentation.tex`](docs/FinSight_Documentation.tex)).
 
 ---
 
