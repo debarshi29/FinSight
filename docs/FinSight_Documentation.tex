@@ -204,32 +204,34 @@ three tiers:
 
 \section{Orchestration Framework}
 
-FinSight is orchestrated by Microsoft \textbf{Semantic Kernel} (SK), which the design
-records describe as "load-bearing" infrastructure rather than a thin wrapper around
-direct LLM calls. A single process-wide \code{Kernel} singleton is constructed by
-\file{core/sk\_kernel.py}\code{::get\_kernel()} and registers:
+FinSight is orchestrated by a \textbf{LangGraph} \code{StateGraph} -- a single
+compiled graph, built once and reused as a process-wide singleton by
+\file{orchestration/graph.py}\code{::get\_graph()}. This replaced a Semantic Kernel
+dispatch layer (documented as \code{docs/DECISIONS.md} Decision~11: the pipeline shape
+never varies with the query, only the fan-out width does, which is exactly what
+LangGraph's \code{Send} API expresses without a hand-rolled \code{asyncio.gather} and
+manual join).
+
+The graph has five nodes:
 
 \begin{itemize}
-    \item One chat completion service (\code{OpenAIChatCompletion}), pointed at Groq's
-    OpenAI-compatible endpoint (or an operator-configured fallback endpoint).
-    \item Four \textbf{native plugins} -- Python classes decorated with
-    \code{@kernel\_function} -- for agents that perform real deterministic or
-    LLM-hybrid computation: \code{RetrieverPlugin}, \code{AnalystPlugin},
-    \code{AuditorPlugin}, \code{ComparatorPlugin}.
-    \item Two \textbf{semantic functions} (\code{KernelFunctionFromPrompt}, pure prompt
-    templates rendered by the kernel) for agents that are pure text-in/text-out LLM
-    tasks: \code{Planner.decompose} and \code{Synthesizer.synthesize}.
+    \item \code{plan} -- calls the PlannerAgent (\code{agents/router.py::plan\_task}).
+    \item \code{retrieve\_analyze} -- one instance per subtask, dispatched via
+    \code{Send()}, running RetrieverAgent then AnalystAgent for that subtask.
+    \item \code{audit} -- calls AuditorAgent over every extracted claim in one batch.
+    \item \code{compare} -- calls ComparatorAgent over the unit-normalized subtask
+    results; runs in the same superstep as \code{audit}, since neither depends on the
+    other.
+    \item \code{synthesize} -- calls SynthesizerAgent once both \code{audit} and
+    \code{compare} have completed.
 \end{itemize}
 
-In practice, the Planner and Synthesizer prompt templates (\code{PLANNER\_PROMPT},
-\code{SYNTHESIZER\_PROMPT} in \file{core/sk\_kernel.py}) are reused as raw format
-strings and invoked via direct \code{chat\_completion()} /
-\code{chat\_completion\_hedged()} calls in the API route handlers, rather than through
-\code{kernel.invoke()}. Only the Retriever, Analyst, Auditor, and Comparator agents are
-invoked through \code{kernel.invoke(plugin\_name=..., function\_name=...,
-arguments=KernelArguments(...))}. This mixed design -- two different invocation
-patterns for what is conceptually one pipeline -- is an explicit, documented tradeoff
-in \file{docs/DECISIONS.md}.
+Retriever, Analyst, Auditor, and Comparator are plain \code{async} functions called
+directly from their nodes -- there is no dispatch layer between a node and the agent
+function it calls. Planner and Synthesizer remain prompt-only roles: they call
+\code{core/groq\_client.py}\code{::chat\_completion()} /
+\code{chat\_completion\_hedged()} directly, which keeps those two calls on the
+retry/reserve/hedge path.
 
 \section{The Six-Stage Pipeline}
 \label{sec:pipeline}
@@ -243,7 +245,7 @@ in \file{docs/DECISIONS.md}.
     arrow/.style={-Stealth, thick, headingblue}
 ]
 \node[box] (query) {User Query};
-\node[box, below=of query] (planner) {PlannerAgent\\\footnotesize semantic function};
+\node[box, below=of query] (planner) {PlannerAgent\\\footnotesize plan node};
 \node[box, below=of planner] (retriever) {RetrieverAgent\\\footnotesize hybrid retrieval + rerank};
 \node[box, below=of retriever] (analyst) {AnalystAgent\\\footnotesize KPI \& claim extraction};
 \node[box, below=of analyst, xshift=-2.0cm] (auditor) {AuditorAgent\\\footnotesize batch entailment check};
@@ -260,8 +262,9 @@ in \file{docs/DECISIONS.md}.
 \draw[arrow] (comparator) -- (synth);
 \draw[arrow] (synth) -- (out);
 \end{tikzpicture}
-\caption{The six-stage agent pipeline. Auditor and Comparator run concurrently in the
-streaming route since neither depends on the other's output -- only on the shared
+\caption{The six-stage agent pipeline, expressed as a LangGraph \code{StateGraph}.
+Auditor and Comparator run concurrently as one superstep on both the blocking and
+streaming routes, since neither depends on the other's output -- only on the shared
 \code{subtask\_results}.}
 \label{fig:pipeline}
 \end{figure}
@@ -278,7 +281,7 @@ streaming route since neither depends on the other's output -- only on the share
     \item \textbf{AuditorAgent}: a single batched LLM call verifies every claim
     produced by every subtask via entailment checking against its supporting snippet,
     classifying each as VERIFIED, UNCERTAIN, or UNVERIFIABLE.
-    \item \textbf{ComparatorAgent} (runs concurrently with the Auditor): performs
+    \item \textbf{ComparatorAgent} (graph superstep, concurrent with the Auditor): performs
     cross-document comparison of pre-normalized figures, flagging deltas exceeding a
     15\% deviation threshold, without performing any arithmetic itself.
     \item \textbf{SynthesizerAgent}: assembles a structured Markdown report from
@@ -287,26 +290,32 @@ streaming route since neither depends on the other's output -- only on the share
 
 \section{Context Propagation}
 
-Citations and claims are threaded through the pipeline as JSON strings inside
-\code{KernelArguments}, so no information is silently dropped between stages:
+Citations and claims are threaded through the pipeline as typed fields on
+\code{orchestration/graph.py}\code{::FinSightState} (a \code{TypedDict}), never
+serialized to JSON and re-parsed between stages. Fan-out fields
+(\code{subtask\_results}, \code{errors}) use \code{Annotated[list[...],
+operator.add]} reducers so LangGraph merges the parallel \code{retrieve\_analyze}
+branches automatically:
 
 \begin{center}
 \ttfamily\small
-user\_task $\rightarrow$ subtasks (list[str]) $\rightarrow$ chunks\_json $\rightarrow$
-analysis\_json (claims) $\rightarrow$ claims\_json $\rightarrow$ audit\_json
-$\rightarrow$ comparison\_json $\rightarrow$ final report
+user\_task $\rightarrow$ subtasks (list[str]) $\rightarrow$ subtask\_results
+(reducer-merged) $\rightarrow$ verified/uncertain/unverifiable + comparison
+$\rightarrow$ final report
 \end{center}
 
 \section{Concurrency and Latency Management}
 
-The streaming route (\file{api/routes/query\_stream.py}) applies several
-latency-reduction strategies:
+Both the blocking and streaming routes drive the same compiled graph through
+\file{orchestration/runner.py}\code{::run\_pipeline()}, which applies several
+latency-reduction strategies inherent to the graph's structure:
 
 \begin{itemize}
-    \item All subtasks' Retriever + Analyst calls run in parallel via
-    \code{asyncio.gather}.
-    \item Auditor and Comparator run concurrently rather than sequentially, since
-    neither consumes the other's output.
+    \item All subtasks' Retriever + Analyst calls run in parallel via LangGraph's
+    \code{Send} fan-out.
+    \item Auditor and Comparator run concurrently as one superstep rather than
+    sequentially, on \emph{both} routes now (previously stream-only), since neither
+    consumes the other's output.
     \item \code{core/groq\_client.py}\code{::chat\_completion\_hedged()} implements
     \emph{request hedging}: the primary LLM call is fired first; if it has not
     returned within a configurable \code{hedge\_after} interval (8.0\,s in the
@@ -321,12 +330,15 @@ latency-reduction strategies:
 
 \begin{lstlisting}[language=bash, basicstyle=\ttfamily\footnotesize, frame=single]
 FinSight/
-|-- agents/                    Six-stage agent pipeline (SK-orchestrated)
-|   |-- router.py               PlannerAgent
-|   |-- retriever.py            RetrieverPlugin (SK native plugin)
-|   |-- analyst.py              AnalystPlugin (SK native plugin)
-|   |-- comparator.py           ComparatorPlugin (SK native plugin)
-|   |-- auditor.py              AuditorPlugin (SK native plugin)
+|-- orchestration/              LangGraph StateGraph orchestration
+|   |-- graph.py                 FinSightState, nodes, Send fan-out, compiled singleton
+|   `-- runner.py                run_pipeline() - astream() driver, latency accounting
+|-- agents/                    Six-stage agent pipeline (graph nodes call these directly)
+|   |-- router.py               PlannerAgent - plan_task()
+|   |-- retriever.py            RetrieverAgent - RetrievalService, retrieve_chunks()
+|   |-- analyst.py              AnalystAgent - analyze_chunks()
+|   |-- comparator.py           ComparatorAgent - compare_results()
+|   |-- auditor.py              AuditorAgent - audit_claims()
 |   `-- synthesizer.py          synthesize_report() (direct LLM call)
 |-- api/                        FastAPI application
 |   |-- main.py                 App factory, lifespan, static mounting, /health
@@ -344,7 +356,7 @@ FinSight/
 |-- core/                       Shared infrastructure
 |   |-- config.py                pydantic-settings Settings (env vars)
 |   |-- models.py                Dataclasses & enums
-|   |-- sk_kernel.py             SK Kernel builder, prompt templates
+|   |-- prompts.py               Planner/Synthesizer prompt templates
 |   |-- groq_client.py           Async LLM client: retry, fallback, hedging
 |   `-- unit_normalizer.py       Deterministic INR/USD normalizer
 |-- retrieval/                  Hybrid retrieval pipeline
@@ -401,7 +413,7 @@ PDF parsing & \code{pymupdf} (fitz) & Page/block/span text extraction \\
 Vector database client & \code{qdrant-client} & Async Qdrant driver \\
 Embeddings \& reranking & \code{sentence-transformers} & Bi-encoder and cross-encoder models \\
 Keyword search & \code{rank-bm25} & BM25Okapi sparse retrieval \\
-Orchestration & \code{semantic-kernel} & Agent/plugin orchestration \\
+Orchestration & \code{langgraph} & StateGraph orchestration: Send fan-out, typed state, custom streaming \\
 LLM client & \code{openai} & OpenAI-compatible client pointed at Groq \\
 LLM client (alt.) & \code{groq} & Native Groq SDK \\
 API framework & \code{fastapi} & HTTP API \\
@@ -448,29 +460,33 @@ inputs/outputs.
 \subsection{\file{router.py} --- PlannerAgent}
 
 \begin{lstlisting}[language=Python]
-def plan_task(user_task: str) -> list[str]:
+async def plan_task(user_task: str, *, streaming: bool = False) -> list[str]:
     ...
 \end{lstlisting}
 
-Invokes \code{kernel.invoke(plugin\_name="Planner", function\_name="decompose",
-arguments=KernelArguments(user\_task=...))}. Parses the LLM's JSON list output; on
+Called once, from \code{orchestration/graph.py}\code{::plan\_node}. Builds
+\code{PLANNER\_PROMPT.format(user\_task=...)} and calls
+\code{chat\_completion()} (or \code{chat\_completion\_hedged()} when
+\code{streaming=True}, taken from graph state). Parses the LLM's JSON list output; on
 JSON-parse failure falls back to bullet/numbered-list regex parsing; if that also fails,
 falls back to the single-element list \code{[user\_task]}.
 
-\subsection{\file{retriever.py} --- RetrieverPlugin}
+\subsection{\file{retriever.py} --- RetrieverAgent}
 \label{sec:retriever}
 
-\code{RetrieverPlugin} exposes a single \code{@kernel\_function(name="retrieve")}
-method:
+\code{RetrievalService} is a framework-agnostic class (no dispatch-layer decorators)
+owning the Qdrant handle and the process-lifetime BM25 corpus cache; the process-wide
+singleton is returned by \code{get\_retrieval\_service()} and used directly by the
+graph:
 
 \begin{lstlisting}[language=Python]
-def retrieve(subtask, company_filter="", fiscal_year_filter="") -> str:  # JSON
+async def retrieve(self, subtask, company_filter="", fiscal_year_filter="") -> list[RankedChunk]:
 \end{lstlisting}
 
 It lazily builds a BM25 index once per process (guarded by an \code{asyncio.Lock} with
 double-checked initialization) over the full Qdrant corpus, obtained via
 \code{scroll\_all()}. The real work is delegated to the module-level
-\code{retrieve\_chunks()}, which:
+\code{retrieve\_chunks()}, called from \code{orchestration/graph.py}\code{::retrieve\_analyze\_node}, which:
 
 \begin{enumerate}
     \item Filters BM25 payloads in-memory for company/fiscal-year (handling
@@ -484,13 +500,14 @@ double-checked initialization) over the full Qdrant corpus, obtained via
     \item Builds \code{RankedChunk} objects with composite confidence scores.
 \end{enumerate}
 
-\subsection{\file{analyst.py} --- AnalystPlugin}
+\subsection{\file{analyst.py} --- AnalystAgent}
 
 \begin{lstlisting}[language=Python]
-def analyze(subtask, chunks_json) -> str:  # JSON {"kpis": [...], "claims": [...]}
+async def analyze_chunks(subtask, chunks_data) -> dict:  # {"kpis": [...], "claims": [...]}
 \end{lstlisting}
 
-Delegates to \code{analyze\_chunks()}, which builds a context string from up to
+Called directly from \code{orchestration/graph.py}\code{::retrieve\_analyze\_node} with
+the chunk list already deserialized -- no JSON round-trip. It builds a context string from up to
 \code{settings.rerank\_top\_k} chunks and calls the LLM with a strict system prompt
 that \textbf{forbids extracting any derived or computed figure} -- ratios, per-unit
 metrics, currency conversions, or cross-company combinations are disallowed; only
@@ -499,14 +516,18 @@ section type (0.9 audited financials / 0.75 notes / 0.6 MD\&A-or-letter). At mos
 claims are extracted per call. On JSON-parse failure, a regex-based fallback extraction
 is applied.
 
-\subsection{\file{auditor.py} --- AuditorPlugin}
+\subsection{\file{auditor.py} --- AuditorAgent}
 \label{sec:auditor}
 
 \begin{lstlisting}[language=Python]
-def audit(claims_json, confidence_threshold="0.65", original_query="") -> str:
+async def audit_claims(claims, chunks_by_subtask, confidence_threshold=None,
+                        original_query="") -> tuple[list, list, list]:
 \end{lstlisting}
 
-Core logic lives in \code{audit\_claims()}. Claims are split into two groups:
+Called directly from \code{orchestration/graph.py}\code{::audit\_node}, which does
+\emph{not} catch exceptions from this call -- an auditor failure aborts the whole
+graph run rather than shipping a report with unaudited claims. Claims are split into
+two groups:
 
 \begin{itemize}
     \item Claims \emph{with} a supporting snippet: batch-audited in a \textbf{single}
@@ -533,13 +554,16 @@ The batch-entailment prompt applies two checks, in order:
 Returns a triple \code{(verified, uncertain, unverifiable)} of \code{AuditedClaim}
 lists.
 
-\subsection{\file{comparator.py} --- ComparatorPlugin}
+\subsection{\file{comparator.py} --- ComparatorAgent}
 
 \begin{lstlisting}[language=Python]
-def compare(subtask_results_json, original_query) -> str:
+async def compare_results(subtask_results, original_query) -> dict:
 \end{lstlisting}
 
-Delegates to \code{compare\_results()}, which calls the LLM under a system prompt that
+Called directly from \code{orchestration/graph.py}\code{::compare\_node}, after
+\code{normalize\_subtask\_results()} has run; the node catches any exception from this
+call and degrades to an empty comparison rather than failing a run that has verified
+claims. It calls the LLM under a system prompt that
 \textbf{prohibits any arithmetic}: no per-unit metrics, no currency/scale conversion, no
 percentage-delta computation, no cross-company arithmetic. The LLM's sole job is to
 place pre-normalized (already converted to Rs.\ crore) verbatim
@@ -556,8 +580,11 @@ def synthesize_report(query, verified_claims, uncertain_claims,
                        comparison, task_id) -> str:
 \end{lstlisting}
 
-A direct \code{chat\_completion()} call (not SK tool-calling) using the
-\code{SYNTHESIZER\_PROMPT} template from \file{core/sk\_kernel.py}. Returns an
+Called from \code{orchestration/graph.py}\code{::synthesize\_node}, which waits for
+both the \code{audit} and \code{compare} nodes -- the graph's join, expressed as two
+incoming edges rather than a manual \code{asyncio.gather}. A direct
+\code{chat\_completion\_hedged()} call using the \code{SYNTHESIZER\_PROMPT} template
+from \file{core/prompts.py}. Returns an
 "insufficient evidence" message outright if there are no verified or uncertain claims.
 The prompt enforces: only verbatim figures with inline citations; an
 \code{[UNCERTAIN]} prefix on uncertain claims; omission of derived figures unless
@@ -577,12 +604,21 @@ All fields are enumerated in Table~\ref{tab:config}.
 The canonical dataclasses and enums shared across the entire system; see
 Chapter~\ref{ch:models}.
 
-\subsection{\file{sk\_kernel.py}}
+\subsection{\file{prompts.py}}
 
-Builds and holds the SK \code{Kernel} singleton (\code{get\_kernel()}), an optional
-reserve kernel (\code{get\_fallback\_kernel()}), and \code{reset\_kernel()}. Contains the
-\code{PLANNER\_PROMPT} and \code{SYNTHESIZER\_PROMPT} string templates and registers
-native plugins plus semantic functions inside \code{\_build\_kernel()}.
+Contains the \code{PLANNER\_PROMPT} and \code{SYNTHESIZER\_PROMPT} string templates
+as plain \code{str.format} strings -- no framework templating, no kernel or service
+object. Imported directly by \file{agents/router.py} and \file{agents/synthesizer.py}.
+
+\subsection{\file{orchestration/graph.py}}
+
+Builds and holds the compiled \code{StateGraph} singleton (\code{get\_graph()}),
+constructed once by \code{build\_graph()}. Defines \code{FinSightState} (the typed
+pipeline state), the five nodes, the \code{Send}-based fan-out (\code{fan\_out()}),
+and \code{AGENT\_SEQUENCE} (the fixed agent order recorded in the audit log, since the
+parallel audit/compare superstep makes node-completion order racy).
+\file{orchestration/runner.py} drives \code{graph.astream()} and derives per-agent
+latency from the stream's \code{updates} events.
 
 \subsection{\file{groq\_client.py}}
 
@@ -1187,16 +1223,22 @@ details diverge from the idealized descriptions in \file{docs/ARCHITECTURE.md}, 
 verified directly against the source.
 
 \begin{enumerate}[leftmargin=1.5em]
-    \item \textbf{Semantic Kernel is load-bearing, not decorative.} Four agents are
-    genuine native SK plugins; only the Planner and Synthesizer are pure prompt
-    templates, and even those are invoked as raw \code{chat\_completion()} calls
-    reusing the SK-authored prompt strings rather than through \code{kernel.invoke()}.
-    This mixed invocation style is acknowledged in \file{docs/DECISIONS.md} as a
-    deliberate, if inelegant, tradeoff.
-    \item \textbf{Auditor/Comparator concurrency is an implementation-level
-    optimization} beyond what the architecture diagram literally shows (which draws
-    Comparator strictly after Auditor); the code recognizes both depend only on
-    \code{subtask\_results} and are safe to parallelize.
+    \item \textbf{LangGraph replaced Semantic Kernel} (\file{docs/DECISIONS.md}
+    Decision~11, 2026-09-09). SK's dispatch layer -- \code{kernel.invoke()} at every
+    hop, citations threaded as JSON strings inside \code{KernelArguments} -- was
+    reversed once eighteen months of living with the code showed the plan's shape
+    never actually varies: plan $\rightarrow$ (retrieve + analyse per subtask,
+    parallel) $\rightarrow$ audit $\parallel$ compare $\rightarrow$ synthesise is a
+    fixed topology with a dynamic fan-out width, which is exactly what LangGraph's
+    \code{Send} API is for. Retriever, Analyst, Auditor, and Comparator are now plain
+    \code{async} functions called directly from graph nodes; Planner and Synthesizer
+    remain prompt-only roles dispatched via \code{chat\_completion()} /
+    \code{chat\_completion\_hedged()}, unchanged by the migration.
+    \item \textbf{Auditor/Comparator concurrency is now structural, not an
+    implementation-level optimization layered on top of a sequential diagram.} They
+    are one LangGraph superstep -- two nodes with the same incoming edge and no edge
+    between them -- so the concurrency holds on \emph{both} the blocking and streaming
+    routes, not only the streaming route as before the LangGraph migration.
     \item \textbf{Section-type confidence weights in code differ slightly from
     documented values} (Table~\ref{tab:section-weights}); the code is authoritative
     for actual system behavior.

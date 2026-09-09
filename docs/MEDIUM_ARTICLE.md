@@ -18,7 +18,7 @@ FinSight treats verification as a separate, adversarial step performed by a diff
 
 ### Six agents, one accountable pipeline
 
-I orchestrated the system with Microsoft's Semantic Kernel — not as a convenience wrapper, but as the actual backbone. A query moves through six stages:
+I orchestrate the system with a LangGraph `StateGraph` — a compiled graph, not a convenience wrapper, that fans a per-query plan out into parallel work and joins it back together. A query moves through six stages:
 
 1. **Planner** decomposes a natural-language query into 2–6 concrete subtasks. "Compare Infosys and TCS margins" becomes separate subtasks per company per fiscal year, because that's what's actually retrievable.
 2. **Retriever** runs a hybrid search per subtask — BM25 for exact figures like `20.7%`, dense embeddings for semantic recall — fused with Reciprocal Rank Fusion and reranked with a cross-encoder.
@@ -55,7 +55,7 @@ None of this is free. The batched entailment check, the concurrent Auditor/Compa
 
 ### Where this goes
 
-The evaluation harness currently scores 4/4 on happy-path queries (verifiable facts, correctly surfaced) and 3/4 on adversarial ones (fabricated events, future-dated queries, cross-domain traps) — the fourth intentionally times out by design rather than guessing on a five-company query that shouldn't be answerable cheaply. That gap between "correct" and "confidently wrong" is the entire point of the project.
+The evaluation harness currently scores 4/4 on happy-path queries (verifiable facts, correctly surfaced) and 4/4 on adversarial ones (fabricated events, future-dated queries, cross-domain traps). That gap between "correct" and "confidently wrong" is the entire point of the project.
 
 The full technical documentation — architecture diagrams, every module's responsibilities, the complete API and configuration reference — is in the repository. The code, the audit log samples, and the evaluation queries are all public:
 

@@ -14,7 +14,7 @@ The standard GenAI portfolio project in 2026 is a RAG chatbot over PDFs. FinSigh
 |---|---|---|
 | Citations | Added at the end, cosmetic | Structural — pipeline cannot produce output without them |
 | Hallucination handling | Prompt instruction ("only use context") | Separate AuditorAgent performs LLM entailment checking; UNVERIFIABLE claims are blocked before synthesis |
-| Task decomposition | Fixed prompt or hardcoded chain | SK Stepwise Planner — the plan changes with the query |
+| Task decomposition | Fixed prompt or hardcoded chain | LLM-generated plan fanned out over a fixed LangGraph topology — the *width* changes with the query, the shape doesn't |
 | Audit trail | None | Per-run JSON artifact: every claim, every retrieval, every agent invoked |
 | Cross-document reasoning | Single-document or naive merge | ComparatorAgent synthesises multi-source claims with multi-source citations |
 | Confidence | Binary (answer / no answer) | Five-signal composite score; three-tier status (VERIFIED / UNCERTAIN / UNVERIFIABLE) |
@@ -30,57 +30,60 @@ The standard GenAI portfolio project in 2026 is a RAG chatbot over PDFs. FinSigh
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────┐
-│  PlannerAgent  ·  SK semantic function                  │
+│  plan  ·  PlannerAgent (LangGraph node)                 │
 │  → Groq decomposes query into 2–6 ordered subtasks      │
 └─────────────────────────┬───────────────────────────────┘
-                          │  per subtask (parallel)
+                          │  Send() — one branch per subtask
                    ┌──────▼──────┐
                    │             │
           ┌────────▼─────────────▼────────┐
-          │  RetrieverAgent · SK native   │
+          │  retrieve_analyze (× N, ∥)    │
+          │  RetrieverAgent:              │
           │  BM25 + Dense → RRF → Rerank  │
           │  → ranked chunks + citations  │
-          └────────────────┬──────────────┘
-                           │  chunks_json
-          ┌────────────────▼──────────────┐
-          │  AnalystAgent · SK native     │
+          │  AnalystAgent:                │
           │  KPI extraction, trend anal.  │
           │  → cited claims per subtask   │
           └────────────────┬──────────────┘
-                           │ all subtask results
-          ┌────────────────▼──────────────┐
-          │  ComparatorAgent · SK native  │
-          │  Cross-doc synthesis, deltas  │
-          │  → anomaly flags, multi-cite  │
-          └────────────────┬──────────────┘
-                           │
-          ┌────────────────▼──────────────┐
-          │  AuditorAgent · SK native     │
-          │  Batch LLM entailment check   │
-          │  VERIFIED / UNCERTAIN /       │
-          │  UNVERIFIABLE (blocked)       │
-          └────────────────┬──────────────┘
-                           │ verified + uncertain only
-          ┌────────────────▼──────────────┐
-          │  SynthesizerAgent · SK func.  │
-          │  → structured GFM report      │
-          └────────────────┬──────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────┐
+                           │ subtask_results (reducer-merged)
+              ┌────────────┴────────────┐
+              │  superstep — parallel   │
+     ┌────────▼────────┐     ┌──────────▼─────────┐
+     │  audit           │     │  compare            │
+     │  AuditorAgent:    │     │  ComparatorAgent:   │
+     │  batch LLM        │     │  cross-doc deltas,  │
+     │  entailment →     │     │  anomaly flags,     │
+     │  VERIFIED /        │     │  multi-source cites │
+     │  UNCERTAIN /        │     └──────────┬─────────┘
+     │  UNVERIFIABLE      │                │
+     │  (blocked)         │                │
+     └────────┬───────────┘                │
+              └──────────────┬─────────────┘
+                             │ verified + uncertain + comparison
+              ┌──────────────▼──────────────┐
+              │  synthesize                  │
+              │  SynthesizerAgent            │
+              │  → structured GFM report     │
+              └──────────────┬──────────────┘
+                             │
+┌────────────────────────────▼─────────────────────────────┐
 │       Structured Report  +  Audit Log (JSON)             │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Semantic Kernel Role
+### Orchestration: LangGraph `StateGraph`
 
-SK is not a convenience wrapper — it is the orchestration layer.
+A single compiled `StateGraph` (`orchestration/graph.py`) is the orchestration layer — a process-wide singleton, built once and reused for the lifetime of the app.
 
-| SK Concept | Where Used | What It Does |
+| Concept | Where Used | What It Does |
 |---|---|---|
-| `Kernel` singleton | `core/sk_kernel.py` | Single LLM service + plugin registry for the whole app |
-| Native plugin | Retriever, Analyst, Auditor, Comparator | Python functions with `@kernel_function` |
-| Semantic function | Planner, Synthesizer | `KernelFunctionFromPrompt` — kernel renders templates before dispatching to Groq |
-| `KernelArguments` | Every agent hop | Threads `subtask → chunks → claims → report` forward without dropping citations |
+| `StateGraph` singleton | `orchestration/graph.py::get_graph()` | Compiled once at first use; `plan → (Send×N) retrieve_analyze → audit ∥ compare → synthesize` |
+| `Send` API | `fan_out()` | Dynamic fan-out — one `retrieve_analyze` branch per subtask, without hardcoding a branch count |
+| Node | Retriever+Analyst, Auditor, Comparator, Synthesizer | Plain async functions (`agents/*.py`) invoked directly as graph nodes — no dispatch layer |
+| `FinSightState` (TypedDict) | Every hop | Typed state with `Annotated[..., operator.add]` reducers; threads `subtask → chunks → claims → report` forward as structural fields, not JSON strings |
+| Custom stream channel | `get_stream_writer()` | Nodes emit `planned` / `retrieved` / `analyzed` / `audited` / `compared` events for the SSE route, with no HTTP awareness |
+
+Planner and Synthesizer remain prompt-only roles dispatched via `core/groq_client.chat_completion` / `chat_completion_hedged` (retry / reserve / hedge path) rather than as graph nodes with side effects of their own — see [`docs/DECISIONS.md`](docs/DECISIONS.md) Decision 11.
 
 ---
 
@@ -256,7 +259,7 @@ docker compose logs -f qdrant   # Qdrant HTTP access log
   "audit_log": {
     "plan": ["Infosys operating margin FY2022", "...", "TCS operating margin FY2024"],
     "blocked_unverifiable": [],
-    "agents_invoked": ["PlannerAgent", "RetrieverAgent", "AnalystAgent", "ComparatorAgent", "AuditorAgent", "SynthesizerAgent"],
+    "agents_invoked": ["PlannerAgent", "RetrieverAgent", "AnalystAgent", "AuditorAgent", "ComparatorAgent", "SynthesizerAgent"],
     "latency_ms": 36200
   }
 }
@@ -294,7 +297,7 @@ python evaluation/harness.py evaluation/queries/happy_path.json
 python evaluation/harness.py evaluation/queries/adversarial.json
 ```
 
-Results are written as JSON to `evaluation/results/`. Current scores: **4/4 happy-path**, **3/4 adversarial** (the fourth times out on a 5-company cross-domain query by design).
+Results are written as JSON to `evaluation/results/`. Current scores: **4/4 happy-path**, **4/4 adversarial** (the fifth-company timeout that previously blocked `adv_003` was removed by the audit/compare superstep — see [`docs/DECISIONS.md`](docs/DECISIONS.md) Decision 11).
 
 **What is measured:**
 - **Retrieval recall** — are the right chunks returned for each subtask?
@@ -346,9 +349,9 @@ All variables are optional except `GROQ_API_KEY`. Copy `.env.example` to `.env` 
 
 | Component | Technology | Rationale |
 |---|---|---|
-| LLM | Groq — Llama 3.3 70B | Free tier, fastest open inference; OpenAI-compatible endpoint slots into SK |
+| LLM | Groq — Llama 3.3 70B | Free tier, fastest open inference; OpenAI-compatible endpoint, one client wrapper (`core/groq_client.py`) |
 | Fallback LLM | Any OpenAI-compatible endpoint | Activated automatically on primary timeout; same credentials interface |
-| Orchestration | Semantic Kernel (Python) | Planner-based — dynamic task decomposition, native plugin system, KernelArguments context passing |
+| Orchestration | LangGraph `StateGraph` | Fixed topology with dynamic `Send` fan-out; typed state with reducers; native async streaming |
 | Vector store | Qdrant (Docker) | Production-grade, local, free; async client; payload-level filtering |
 | Embeddings | `all-MiniLM-L6-v2` | Local — no API dependency; 384-dim, strong retrieval quality |
 | Reranker | `ms-marco-MiniLM-L6-v2` | Cross-encoder: joint (query, passage) attention; better than bi-encoder similarity alone |
@@ -382,13 +385,16 @@ A full LaTeX technical reference is also available at [`docs/FinSight_Documentat
 
 ```
 finsight/
+├── orchestration/
+│   ├── graph.py            # LangGraph StateGraph — nodes, Send fan-out, compiled singleton
+│   └── runner.py           # run_pipeline() — drives astream(), derives per-agent latencies
 ├── agents/
-│   ├── router.py          # PlannerAgent — SK semantic function
-│   ├── retriever.py       # RetrieverAgent — SK native plugin, hybrid retrieval
-│   ├── analyst.py         # AnalystAgent — SK native plugin, KPI extraction
-│   ├── comparator.py      # ComparatorAgent — SK native plugin, cross-doc synthesis
-│   ├── auditor.py         # AuditorAgent — SK native plugin, batch entailment check
-│   └── synthesizer.py     # SynthesizerAgent — delegates to SK semantic function
+│   ├── router.py          # plan_task() — PlannerAgent, chat_completion (not a graph node)
+│   ├── retriever.py       # RetrieverAgent — hybrid retrieval, called from retrieve_analyze_node
+│   ├── analyst.py         # AnalystAgent — KPI extraction, called from retrieve_analyze_node
+│   ├── comparator.py      # ComparatorAgent — cross-doc synthesis, compare_node
+│   ├── auditor.py         # AuditorAgent — batch entailment check, audit_node
+│   └── synthesizer.py     # SynthesizerAgent — synthesize_report(), chat_completion_hedged
 ├── retrieval/
 │   ├── qdrant_store.py    # Async Qdrant client wrapper
 │   ├── embedder.py        # sentence-transformers local embeddings
@@ -416,7 +422,7 @@ finsight/
 │       ├── index.html     # Web UI — query interface + live pipeline visualiser
 │       └── dashboard.html # Metrics dashboard
 ├── core/
-│   ├── sk_kernel.py       # SK kernel singleton + plugin registration
+│   ├── prompts.py         # Planner/Synthesizer prompt templates
 │   ├── models.py          # Citation, Chunk, AuditedClaim, AuditLog dataclasses
 │   ├── config.py          # pydantic-settings (all env vars)
 │   └── groq_client.py     # Async Groq/OpenAI client wrapper with fallback
