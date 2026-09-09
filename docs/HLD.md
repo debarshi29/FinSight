@@ -126,9 +126,9 @@ External dependencies:
 │   GET /metrics /eval/* /health   ·  /ui  /dashboard                    │
 │   ASGI GuardrailsMiddleware (prompt-injection screen)                  │
 ├───────────────────────────────────────────────────────────────────────┤
-│ Orchestration layer        api/routes/query.py · query_stream.py       │
-│   Fixed 6-stage pipeline; parallel subtasks; concurrent audit/compare  │
-│   Semantic Kernel kernel.invoke() for Retriever/Analyst/Auditor/Compare│
+│ Orchestration layer        orchestration/graph.py · runner.py          │
+│   LangGraph StateGraph: plan → Send×N retrieve_analyze →               │
+│   audit ∥ compare (superstep) → synthesize; runner drives astream()    │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Agent layer                agents/*                                    │
 │   Planner · Retriever · Analyst · Auditor · Comparator · Synthesizer   │
@@ -140,7 +140,7 @@ External dependencies:
 │   core/unit_normalizer.py  (deterministic currency/scale math)         │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Foundation layer           core/*  ·  observability/*                  │
-│   sk_kernel (kernel singleton + prompts) · groq_client (LLM + reserve  │
+│   prompts (Planner/Synthesizer templates) · groq_client (LLM + reserve │
 │   + hedging) · config (pydantic-settings) · models (dataclasses)       │
 │   tracer (structlog / OTel) · api/metrics_store (in-proc metrics)      │
 └───────────────────────────────────────────────────────────────────────┘
@@ -151,45 +151,46 @@ External dependencies:
 | # | Agent | Kind | Input → Output | Responsibility |
 |---|---|---|---|---|
 | 1 | **PlannerAgent** | Prompt (`PLANNER_PROMPT`) | query → `list[str]` subtasks | Decompose the query into 2–6 searchable subtasks. |
-| 2 | **RetrieverAgent** | SK native plugin | subtask → ranked chunks (JSON) | BM25 + dense search → RRF fusion → cross-encoder rerank → 5-signal confidence. |
-| 3 | **AnalystAgent** | SK native plugin (LLM inside) | subtask + chunks → claims + KPIs (JSON) | Extract verbatim-stated claims with supporting text; refuse derived figures. |
-| 4 | **AuditorAgent** | SK native plugin (LLM inside) | all claims + threshold + query → verified / uncertain / unverifiable | Per-claim entailment + fabricated-event check; classify and block. |
-| 5 | **ComparatorAgent** | SK native plugin (LLM inside) | normalised subtask results + query → deltas / anomalies / cross-doc claims | Place verbatim figures side by side; flag material differences; no arithmetic. |
-| 6 | **SynthesizerAgent** | Prompt (`SYNTHESIZER_PROMPT`) | query + verified + uncertain + comparison → Markdown report | Assemble the report; reproduce only verbatim / pipeline-labelled figures. |
+| 2 | **RetrieverAgent** | Graph node (`retrieve_analyze`) | subtask → ranked chunks | BM25 + dense search → RRF fusion → cross-encoder rerank → 5-signal confidence. |
+| 3 | **AnalystAgent** | Graph node (`retrieve_analyze`, LLM inside) | subtask + chunks → claims + KPIs | Extract verbatim-stated claims with supporting text; refuse derived figures. |
+| 4 | **AuditorAgent** | Graph node (`audit`, LLM inside) | all claims + threshold + query → verified / uncertain / unverifiable | Per-claim entailment + fabricated-event check; classify and block. |
+| 5 | **ComparatorAgent** | Graph node (`compare`, LLM inside) | normalised subtask results + query → deltas / anomalies / cross-doc claims | Place verbatim figures side by side; flag material differences; no arithmetic. |
+| 6 | **SynthesizerAgent** | Graph node (`synthesize`), prompt (`SYNTHESIZER_PROMPT`) | query + verified + uncertain + comparison → Markdown report | Assemble the report; reproduce only verbatim / pipeline-labelled figures. |
 
-> **Note on Semantic Kernel usage.** The kernel is the dispatch point for the four native-plugin agents (`kernel.invoke(plugin_name=…)`). Planner and Synthesizer are invoked as direct `chat_completion` calls with the same prompt templates that are also registered on the kernel — this keeps their requests on the retry/reserve/hedge path in `core/groq_client.py`. `agents/router.py::plan_task` retains the pure `kernel.invoke("Planner")` form and is the reference for the SK-native planner call. See [DECISIONS.md](DECISIONS.md) §2–3.
+> **Note on orchestration.** `orchestration/graph.py` is a single compiled LangGraph `StateGraph`, a process-wide singleton. Retriever, Analyst, Auditor, and Comparator are plain async functions called directly from graph nodes — there is no dispatch layer between the node and the agent function. Planner and Synthesizer remain prompt-only roles: `agents/router.py::plan_task` and `agents/synthesizer.py::synthesize_report` call `core/groq_client.chat_completion` / `chat_completion_hedged` directly, keeping those two calls on the retry/reserve/hedge path. This replaced a Semantic Kernel dispatch layer; see [DECISIONS.md](DECISIONS.md) Decision 11.
 
 ### 5.3 Request flow — `POST /query` (blocking)
 
 ```
-client ──▶ GuardrailsMiddleware ──▶ query.run_query
+client ──▶ GuardrailsMiddleware ──▶ query.run_query ──▶ runner.run_pipeline(graph)
                                        │
-   1. PlannerAgent            chat_completion(PLANNER_PROMPT)          → subtasks[]
+   1. plan node          PlannerAgent — chat_completion(PLANNER_PROMPT) → subtasks[]
                                        │
-   2. per subtask, in parallel (asyncio.gather):
-        RetrieverAgent  kernel.invoke("Retriever","retrieve")         → chunks_json
-        AnalystAgent    kernel.invoke("Analyst","analyze")            → {kpis, claims}
-                                       │  collect all_claims, subtask_results
-   3. AuditorAgent      kernel.invoke("Auditor","audit",              → {verified,
-                          claims_json, threshold, original_query)         uncertain,
-                                       │                                  unverifiable}
-   4. Comparator: normalize_subtask_results()  (deterministic ₹-crore)
-        ComparatorAgent kernel.invoke("Comparator","compare")         → {deltas, …}
+   2. retrieve_analyze node, one per subtask via Send(), run in parallel:
+        RetrieverAgent   retrieve_chunks(...)                          → ranked chunks
+        AnalystAgent     analyze_chunks(...)                           → {kpis, claims}
+                                       │  merged into subtask_results (reducer)
+   3. audit ∥ compare — one superstep, neither depends on the other:
+        audit node       AuditorAgent — audit_claims(claims, threshold, → {verified,
+                            original_query)                                uncertain,
+                                                                             unverifiable}
+        compare node      normalize_subtask_results() (deterministic ₹-crore)
+                            ComparatorAgent — compare_results(...)      → {deltas, …}
                                        │
-   5. SynthesizerAgent  synthesize_report()  chat_completion(SYNTH)   → Markdown
+   4. synthesize node    SynthesizerAgent — synthesize_report()        → Markdown
+                          (chat_completion_hedged(SYNTH))
                                        │
-   6. build AuditLog → write audit_logs/<task_id>.json
+   5. build AuditLog → write audit_logs/<task_id>.json
       build AnalysisReport → metrics.record_complete → return JSON
 ```
 
 ### 5.4 Request flow — `POST /query/stream` (SSE)
 
-Same six stages, with these differences:
+Same graph, driven through the same `run_pipeline`, with these differences:
 
-- Planner uses `chat_completion_hedged(hedge_after=8.0)` — fires the reserve concurrently if the primary is slow.
-- Retriever+Analyst per-subtask coroutines are `gather`-ed; each emits `retrieved` / `analyzed` / `error` events.
-- **Auditor and Comparator run concurrently** (`asyncio.gather(_audit(), _compare())`); wall-clock is `max`, not `sum`.
+- The `on_event` callback forwards each custom-stream event straight into the SSE response instead of being collected for a single JSON return.
 - Events emitted in order: `start → planned → retrieved* → analyzed* → audited → compared → done` (or `error`).
+- **Auditor and Comparator already run concurrently on both routes** — they are one LangGraph superstep, not something the stream route adds; wall-clock is `max`, not `sum`, on `/query` as well as `/query/stream` (see [DECISIONS.md](DECISIONS.md) Decision 11 tradeoffs).
 
 ---
 
@@ -218,9 +219,8 @@ Full context in [DECISIONS.md](DECISIONS.md). The load-bearing ones:
 
 | # | Decision | One-line rationale |
 |---|---|---|
-| D1 | Semantic Kernel over LangGraph | Plan is LLM-generated per query; no fixed graph topology. |
-| D2 | Route native-agent hops through `kernel.invoke()` | Single plugin registry + context chain; one place to add cross-cutting logic. |
-| D3 | Native plugins for Retriever/Analyst/Auditor/Comparator; prompt functions for Planner/Synthesizer | Match the tool to the work — real computation vs. pure text-in/text-out. |
+| D1–D3 | *(superseded by D11)* Semantic Kernel over LangGraph, `kernel.invoke()` at every hop, native plugins vs. prompt functions | Historical — see D11. |
+| D3 | Retriever/Analyst/Auditor/Comparator as computational graph nodes; Planner/Synthesizer as prompt-only `chat_completion` calls | Match the tool to the work — real computation vs. pure text-in/text-out; the split survives D11, only the framework changed. |
 | D4 | Reciprocal Rank Fusion (k=60), not weighted score blend | Scale-invariant across BM25 vs. cosine. |
 | D5 | Two-stage retrieval (bi-encoder → cross-encoder) | Cross-encoder accuracy at bi-encoder speed via a small candidate pool. |
 | D6 | AuditorAgent as a separate structural pass | A prompt instruction competes with model priors; a separate call does not. |
@@ -228,6 +228,7 @@ Full context in [DECISIONS.md](DECISIONS.md). The load-bearing ones:
 | D8 | Heading-aware sliding-window chunker (400 / 80 tokens) | Respect the strong heading structure of filings; overlap keeps boundary figures retrievable. |
 | D9 | Qdrant over Chroma / managed | Async client, indexed payload filters, self-contained in Docker. |
 | D10 | Groq / Llama 3.3 70B | Free tier, OpenAI-compatible, fast enough that retrieval is the bottleneck. |
+| D11 | LangGraph `StateGraph` over Semantic Kernel, reversing D1–D3 | Fixed topology with dynamic `Send` fan-out expresses the real pipeline shape; typed state replaces JSON-string round-tripping; audit ∥ compare becomes an explicit superstep. |
 | — | Deterministic unit normaliser before Comparator | The LLM must never do currency/scale arithmetic. |
 
 ---
@@ -292,7 +293,7 @@ docker-compose.yml
 
 | Process | Count | State |
 |---|---|---|
-| FastAPI / uvicorn | 1 | In-process: SK kernel singleton, BM25 corpus cache, `MetricsStore`, loaded ML models. |
+| FastAPI / uvicorn | 1 | In-process: compiled `StateGraph` singleton, BM25 corpus cache, `MetricsStore`, loaded ML models. |
 | Qdrant | 1 | On-disk vectors + payload under `qdrant_storage/`. |
 | LLM endpoint(s) | external | Stateless from FinSight's side. |
 

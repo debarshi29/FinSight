@@ -31,8 +31,8 @@ These are the invariants the design depends on. A change that breaks one needs a
 1. **Citations are structural.** Every claim that reaches a user carries a `Citation` (document, page, verbatim snippet). Don't add a code path that emits a figure without one.
 2. **No LLM arithmetic.** Currency/scale conversion and any derived figure is done in `core/unit_normalizer.py` with `Decimal`, or not at all. The Analyst / Comparator / Synthesizer prompts forbid computed figures — keep them that way.
 3. **The AuditorAgent is a hard gate.** `UNVERIFIABLE` claims must have no code path to the synthesised report. They go in the audit log's `blocked_unverifiable` only.
-4. **One LLM dispatch point.** All model calls go through `core/groq_client.py` (retry → reserve → hedge) or `kernel.invoke`. Don't instantiate an OpenAI client elsewhere.
-5. **Single process.** In-process state (SK kernel singleton, BM25 cache, `MetricsStore`) assumes one uvicorn worker. Don't add state that breaks under that assumption without also making it shared.
+4. **One LLM dispatch point.** All model calls go through `core/groq_client.py` (retry → reserve → hedge). Don't instantiate an OpenAI client elsewhere.
+5. **Single process.** In-process state (compiled `StateGraph` singleton, BM25 cache, `MetricsStore`) assumes one uvicorn worker. Don't add state that breaks under that assumption without also making it shared.
 6. **Every run emits an `AuditLog`.** Even the failure/"insufficient evidence" paths.
 
 ## Making a change
@@ -56,11 +56,10 @@ These are the invariants the design depends on. A change that breaks one needs a
 
 ## Adding an agent
 
-1. New class with `@kernel_function`-decorated method(s) in `agents/`.
-2. Register it in `core/sk_kernel.py::_build_kernel` (`kernel.add_plugin(...)`), imported lazily inside the function to avoid the import cycle.
-3. Wire the `kernel.invoke(...)` call into `api/routes/query.py` **and** `api/routes/query_stream.py` (keep the two pipelines in step).
-4. Add it to the `agents_invoked` list and, if it has its own latency budget, to `MetricsStore._agent_timings`.
-5. Document it: HLD §5.2 table, LLD §3.
+1. New async function in `agents/` — a plain coroutine, no framework decorators.
+2. Add a node for it in `orchestration/graph.py::build_graph()` and wire it into the edge list (or a `Send`-based fan-out, if it's per-subtask like `retrieve_analyze`). Both `/query` and `/query/stream` run the same compiled graph, so there is only one pipeline to keep in step now.
+3. Add it to `orchestration/graph.py::AGENT_SEQUENCE` and, if it has its own latency budget, to `MetricsStore._agent_timings`.
+4. Document it: HLD §5.2 table, LLD §3.
 
 ## What not to commit
 

@@ -10,7 +10,7 @@ The architecture is shaped by a single constraint that separates FinSight from a
 
 This forces several design decisions that would be unnecessary in a looser system:
 
-- Citations are a structural field, not a cosmetic annotation. Every agent hop carries citations in `KernelArguments` and the pipeline cannot produce output without them.
+- Citations are a structural field, not a cosmetic annotation. Every agent hop carries citations as typed fields on the LangGraph `FinSightState` and the pipeline cannot produce output without them.
 - The AuditorAgent is a separate structural pass. It is not a prompt instruction asking the model to be careful. It calls the LLM again on each claim individually and blocks `UNVERIFIABLE` results before synthesis.
 - The audit log is a first-class output, not a side effect. It records the plan, every retrieval, every claim, what was blocked, and which agents were invoked — for every query run.
 
@@ -27,122 +27,120 @@ This forces several design decisions that would be unnecessary in a looser syste
                        └────────────────┬───────────────┘
                                         │
                        ┌────────────────▼───────────────┐
-                       │   SK Kernel  (core/sk_kernel)  │
-                       │   ├── OpenAIChatCompletion      │
-                       │   │   (Groq endpoint)           │
-                       │   ├── Native plugins:           │
-                       │   │   Retriever, Analyst,       │
-                       │   │   Auditor, Comparator       │
-                       │   └── Semantic functions:       │
-                       │       Planner, Synthesizer      │
+                       │  orchestration/runner.py         │
+                       │  run_pipeline() — drives          │
+                       │  graph.astream(), derives          │
+                       │  per-agent latencies                │
                        └────────────┬───────────────────┘
-                                    │  kernel.invoke()
-             ┌──────────────────────┼──────────────────────┐
-             │                      │                      │
-     ┌───────▼──────┐   ┌───────────▼────────┐   ┌───────▼──────────┐
-     │  PlannerAgent│   │  RetrieverAgent     │   │  AnalystAgent    │
-     │  (semantic   │   │  (native plugin)    │   │  (native plugin) │
-     │  function)   │   │  BM25+Dense+RRF     │   │  KPI extraction  │
-     │  decompose() │   │  +Rerank+Confidence │   │  cited claims    │
-     └──────────────┘   └──────────┬──────────┘   └──────┬───────────┘
-                                   │                      │
-                       ┌───────────▼──────────────────────▼──────────┐
-                       │         AuditorAgent (native plugin)         │
-                       │  LLM entailment per claim → VERIFIED /       │
-                       │  UNCERTAIN / UNVERIFIABLE (blocked)          │
-                       └───────────────────────┬─────────────────────┘
-                                               │
-                       ┌───────────────────────▼─────────────────────┐
-                       │       ComparatorAgent (native plugin)        │
-                       │  Cross-doc synthesis, delta analysis,        │
-                       │  anomaly flags, multi-source citations       │
-                       └───────────────────────┬─────────────────────┘
-                                               │
-                       ┌───────────────────────▼─────────────────────┐
-                       │    SynthesizerAgent (semantic function)      │
-                       │  kernel.invoke("Synthesizer", "synthesize")  │
-                       │  → Structured report from verified claims    │
-                       └───────────────────────┬─────────────────────┘
-                                               │
-                        ┌──────────────────────▼────────────────────┐
+                                    │  astream(state)
+                       ┌────────────▼───────────────────┐
+                       │  StateGraph (orchestration/graph)│
+                       │  compiled once, process singleton │
+                       └────────────┬───────────────────┘
+                                    │
+                       ┌────────────▼───────────────────┐
+                       │  plan (node)                      │
+                       │  PlannerAgent — chat_completion    │
+                       │  via core/groq_client               │
+                       └────────────┬───────────────────┘
+                                    │  Send() × N subtasks
+                       ┌────────────▼───────────────────┐
+                       │  retrieve_analyze (node, × N, ∥)  │
+                       │  RetrieverAgent: BM25+Dense+RRF   │
+                       │  +Rerank+Confidence                 │
+                       │  AnalystAgent: KPI extraction,      │
+                       │  cited claims                        │
+                       └────────────┬───────────────────┘
+                                    │  subtask_results (reducer)
+                    ┌───────────────┴───────────────┐
+                    │      superstep — parallel      │
+          ┌─────────▼─────────┐         ┌───────────▼──────────┐
+          │  audit (node)       │         │  compare (node)         │
+          │  AuditorAgent —      │         │  ComparatorAgent —       │
+          │  batch LLM            │         │  cross-doc synthesis,     │
+          │  entailment →          │         │  delta analysis,           │
+          │  VERIFIED /              │         │  anomaly flags,              │
+          │  UNCERTAIN /              │         │  multi-source citations      │
+          │  UNVERIFIABLE            │         └───────────┬──────────┘
+          │  (blocked)                │                     │
+          └─────────┬─────────┘                     │
+                    └───────────────┬─────────────────┘
+                                    │  verified + uncertain + comparison
+                       ┌────────────▼───────────────────┐
+                       │  synthesize (node)                │
+                       │  SynthesizerAgent —                 │
+                       │  chat_completion_hedged             │
+                       │  → Structured report                 │
+                       └────────────┬───────────────────┘
+                                    │
+                        ┌───────────▼────────────────┐
                         │  AnalysisReport  +  AuditLog  (JSON)      │
                         └───────────────────────────────────────────┘
 ```
 
 ---
 
-## Semantic Kernel Design
+## Orchestration: LangGraph `StateGraph`
 
-### Why SK Is Load-Bearing
+### Why It's the Orchestration Layer
 
-Semantic Kernel is not a thin API wrapper in this system. Removing it would require reimplementing plugin registration, context passing (KernelArguments), and prompt template rendering.
+The pipeline shape never varies with the query: plan → (retrieve + analyse per subtask, in parallel) → audit ∥ compare → synthesise. Only the *width* of the fan-out (how many subtasks) is dynamic. LangGraph's `Send` API expresses exactly that — a fixed topology with a data-dependent number of parallel branches — without hand-rolling `asyncio.gather` and a manual join. See [DECISIONS.md](DECISIONS.md) Decision 11 for the full reasoning and what this replaced (Semantic Kernel).
 
-The four computational agents — Retriever, Analyst, Auditor, Comparator — are dispatched exclusively through `kernel.invoke(plugin_name=…)`. The Planner and Synthesizer are prompt-only roles: they are registered on the kernel as `KernelFunctionFromPrompt` (see `core/sk_kernel.py`), and `agents/router.py::plan_task` invokes the Planner in that pure SK form. The `POST /query` and `POST /query/stream` routes, however, call Planner and Synthesizer via `core/groq_client.chat_completion` / `chat_completion_hedged` using the *same* prompt templates — this keeps those two calls on the retry / reserve-endpoint / hedging path that lives in `groq_client`. Both invocation forms share one prompt definition; see [DECISIONS.md](DECISIONS.md) §2–3.
+The four computational agents — Retriever, Analyst, Auditor, Comparator — are plain async functions called directly from graph nodes (`orchestration/graph.py`). The Planner and Synthesizer are prompt-only roles: `agents/router.py::plan_task` and `agents/synthesizer.py::synthesize_report` call `core/groq_client.chat_completion` / `chat_completion_hedged` directly (retry / reserve-endpoint / hedging path) rather than being graph nodes with side effects of their own.
 
-### Kernel Singleton
+### Graph Singleton
 
-`core/sk_kernel.py` builds a single `sk.Kernel` instance at startup. It is reused for the lifetime of the process. Lazy initialization via `_kernel: sk.Kernel | None = None` with `get_kernel()`.
-
-```
-core/sk_kernel.py
-  _build_kernel()
-    ├── kernel.add_service(OpenAIChatCompletion)
-    │   └── async_client = AsyncOpenAI(base_url=groq_base_url)
-    │                                            ↓
-    │                             Groq — Llama 3.3 70B
-    ├── kernel.add_plugin(RetrieverPlugin, "Retriever")
-    ├── kernel.add_plugin(AnalystPlugin,   "Analyst")
-    ├── kernel.add_plugin(AuditorPlugin,   "Auditor")
-    ├── kernel.add_plugin(ComparatorPlugin,"Comparator")
-    ├── kernel.add_function("Planner",    KernelFunctionFromPrompt(...))
-    └── kernel.add_function("Synthesizer",KernelFunctionFromPrompt(...))
-```
-
-### Two Types of SK Functions
-
-| Type | Plugin Name | File | Invocation |
-|---|---|---|---|
-| Semantic function | `Planner` | `core/sk_kernel.py` | registered as `KernelFunctionFromPrompt`; `agents/router.py::plan_task` calls `kernel.invoke("Planner", "decompose", …)`. The query routes render the same template and call `chat_completion` directly. |
-| Semantic function | `Synthesizer` | `core/sk_kernel.py` | registered as `KernelFunctionFromPrompt`; `agents/synthesizer.py::synthesize_report` renders the same template and calls `chat_completion` directly (retry / reserve path). |
-| Native plugin | `Retriever` | `agents/retriever.py` | `kernel.invoke("Retriever", "retrieve", KernelArguments(subtask=...))` |
-| Native plugin | `Analyst` | `agents/analyst.py` | `kernel.invoke("Analyst", "analyze", KernelArguments(subtask=..., chunks_json=...))` |
-| Native plugin | `Auditor` | `agents/auditor.py` | `kernel.invoke("Auditor", "audit", KernelArguments(claims_json=..., confidence_threshold=...))` |
-| Native plugin | `Comparator` | `agents/comparator.py` | `kernel.invoke("Comparator", "compare", KernelArguments(subtask_results_json=..., original_query=...))` |
-
-**Semantic functions** are `KernelFunctionFromPrompt` instances. SK renders the `{{$variable}}` template, applies token limits, and dispatches to Groq. The prompt itself is the logic — the LLM produces a plan or a report.
-
-**Native plugins** are Python classes with `@kernel_function`-decorated methods. SK calls the Python function directly via `kernel.invoke()`. The function does real work (BM25 search, cross-encoder reranking, entailment checking) and returns a JSON string that threads into the next hop via `KernelArguments`.
-
-### KernelArguments Context Chain
-
-Citations and computed data pass through the pipeline as JSON strings inside `KernelArguments`. They are never lost between hops:
+`orchestration/graph.py::build_graph()` constructs and compiles a single `StateGraph` at first use; `get_graph()` returns the cached instance for the lifetime of the process.
 
 ```
-user_task (str)
-    │ KernelArguments(user_task=...)
-    ▼
-Planner.decompose → subtasks (list[str])
-    │
-    │ KernelArguments(subtask=subtask)
-    ▼
-Retriever.retrieve → chunks_json (JSON str with citations)
-    │
-    │ KernelArguments(subtask=subtask, chunks_json=chunks_json)
-    ▼
-Analyst.analyze → analysis_json (JSON str with cited claims)
-    │
-    │ KernelArguments(claims_json=all_claims_json, confidence_threshold=...)
-    ▼
-Auditor.audit → audit_json (verified / uncertain / unverifiable)
-    │
-    │ KernelArguments(subtask_results_json=..., original_query=...)
-    ▼
-Comparator.compare → comparison_json (deltas, anomalies)
-    │
-    │ KernelArguments(query=..., verified_claims=..., uncertain_claims=..., comparison=...)
-    ▼
-Synthesizer.synthesize → final report (str)
+orchestration/graph.py
+  build_graph()
+    ├── add_node("plan", plan_node)                    # PlannerAgent
+    ├── add_node("retrieve_analyze", retrieve_analyze_node)  # Retriever + Analyst
+    ├── add_node("audit", audit_node)                  # AuditorAgent
+    ├── add_node("compare", compare_node)               # ComparatorAgent
+    ├── add_node("synthesize", synthesize_node)         # SynthesizerAgent
+    ├── add_edge(START, "plan")
+    ├── add_conditional_edges("plan", fan_out, ["retrieve_analyze"])  # Send × N
+    ├── add_edge("retrieve_analyze", "audit")
+    ├── add_edge("retrieve_analyze", "compare")          # audit ∥ compare superstep
+    ├── add_edge("audit", "synthesize")
+    ├── add_edge("compare", "synthesize")
+    └── add_edge("synthesize", END)
 ```
+
+### Nodes
+
+| Node | File | What It Does |
+|---|---|---|
+| `plan` | `orchestration/graph.py::plan_node` | Calls `agents/router.py::plan_task` — Groq decomposes the query into 2–6 subtasks |
+| `retrieve_analyze` | `orchestration/graph.py::retrieve_analyze_node` | One instance per subtask via `Send`; calls `agents/retriever.py` then `agents/analyst.py`; never raises — a failing subtask contributes an `errors` entry and nothing else |
+| `audit` | `orchestration/graph.py::audit_node` | Calls `agents/auditor.py::audit_claims` over every extracted claim in one batch call; deliberately does not catch exceptions — an auditor failure aborts the whole run |
+| `compare` | `orchestration/graph.py::compare_node` | Calls `agents/comparator.py::compare_results` over unit-normalised subtask results; catches exceptions and degrades to an empty comparison rather than sinking a run with verified claims |
+| `synthesize` | `orchestration/graph.py::synthesize_node` | Calls `agents/synthesizer.py::synthesize_report` |
+
+### `FinSightState`
+
+State is a typed `TypedDict` (`orchestration/graph.py::FinSightState`), not a JSON string re-parsed at each hop. Fan-out fields (`subtask_results`, `errors`) use `Annotated[list[...], operator.add]` reducers so LangGraph merges the parallel `retrieve_analyze` branches automatically:
+
+```
+query, company_filter, fiscal_year_filter, confidence_threshold, task_id, streaming   (inputs)
+    │
+plan_node → subtasks: list[str]
+    │
+retrieve_analyze_node (× N, merged via operator.add) → subtask_results: list[SubtaskResult], errors: list[dict]
+    │
+audit_node → verified, uncertain, unverifiable
+compare_node → comparison                                    (same superstep)
+    │
+synthesize_node → summary
+```
+
+Citations and computed data are structural fields on typed dataclasses/TypedDicts throughout — never serialised to JSON and re-parsed between hops.
+
+### Streaming
+
+Nodes emit progress via LangGraph's custom stream channel (`langgraph.config.get_stream_writer`), wrapped in `orchestration/graph.py::_emit` as a best-effort no-op when nobody is streaming. `orchestration/runner.py::run_pipeline` consumes `astream(state, stream_mode=["values", "updates", "custom"])`, forwards `custom` events to an optional callback (the SSE route), and derives per-agent latency from `updates` events — the graph layer never imports `api`, so it has no HTTP awareness.
 
 ---
 
@@ -374,7 +372,7 @@ class AuditLog:
 
 ## API Layer
 
-`api/main.py` configures the FastAPI application with a lifespan context manager that starts Qdrant and warms the SK kernel at startup.
+`api/main.py` configures the FastAPI application with a lifespan context manager that starts Qdrant and compiles the LangGraph `StateGraph` singleton at startup.
 
 ### Guardrails Middleware
 
@@ -440,13 +438,16 @@ Qdrant runs in Docker via `docker-compose.yml`. The API container declares a dep
 
 ```
 finsight/
+├── orchestration/
+│   ├── graph.py            # StateGraph — nodes, Send fan-out, FinSightState, compiled singleton
+│   └── runner.py           # run_pipeline() — astream() driver, per-agent latency accounting
 ├── agents/
-│   ├── router.py          # plan_task() — PlannerAgent via kernel.invoke
-│   ├── retriever.py       # RetrieverPlugin — @kernel_function retrieve()
-│   ├── analyst.py         # AnalystPlugin  — @kernel_function analyze()
-│   ├── comparator.py      # ComparatorPlugin — @kernel_function compare()
-│   ├── auditor.py         # AuditorPlugin  — @kernel_function audit()
-│   └── synthesizer.py     # synthesize_report() — via kernel.invoke Synthesizer
+│   ├── router.py          # plan_task() — PlannerAgent, chat_completion (not a graph node)
+│   ├── retriever.py       # RetrieverAgent — retrieve(), called from retrieve_analyze_node
+│   ├── analyst.py         # AnalystAgent — analyze_chunks(), called from retrieve_analyze_node
+│   ├── comparator.py      # ComparatorAgent — compare_results(), called from compare_node
+│   ├── auditor.py         # AuditorAgent — audit_claims(), called from audit_node
+│   └── synthesizer.py     # synthesize_report() — chat_completion_hedged, called from synthesize_node
 ├── retrieval/
 │   ├── qdrant_store.py    # QdrantStore: ensure_collection, upsert, dense_search, scroll
 │   ├── embedder.py        # SentenceTransformer local wrapper
@@ -462,16 +463,17 @@ finsight/
 ├── api/
 │   ├── main.py            # FastAPI app, lifespan, /health
 │   ├── routes/
-│   │   ├── query.py       # POST /query — full kernel.invoke pipeline
+│   │   ├── query.py       # POST /query — run_pipeline() over the compiled graph, blocking
+│   │   ├── query_stream.py# POST /query/stream — same graph, SSE progress events
 │   │   ├── ingest.py      # POST /ingest/upload
 │   │   └── eval.py        # GET /eval/*
 │   └── middleware/
 │       └── guardrails.py  # prompt injection detection middleware
 ├── core/
-│   ├── sk_kernel.py       # _build_kernel(), get_kernel() singleton
+│   ├── prompts.py         # Planner/Synthesizer prompt templates
 │   ├── models.py          # Citation, Chunk, RankedChunk, AuditedClaim, AuditLog
 │   ├── config.py          # Settings (pydantic-settings, .env)
-│   └── groq_client.py     # chat_completion() async wrapper
+│   └── groq_client.py     # chat_completion() / chat_completion_hedged() async wrapper
 ├── evaluation/
 │   ├── harness.py         # run_harness(query_file) — async test runner
 │   └── queries/

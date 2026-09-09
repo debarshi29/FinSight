@@ -12,9 +12,13 @@
 core/                         foundation — no intra-project deps except each other
   config.py                   Settings (pydantic-settings)                → everything
   models.py                   dataclasses + enums                          → everything
-  sk_kernel.py                Kernel singleton, PLANNER/SYNTHESIZER prompt → agents, routes
-  groq_client.py              chat_completion / chat_completion_hedged     → agents, routes
-  unit_normalizer.py          deterministic ₹-crore conversion             → routes (pre-Comparator)
+  prompts.py                  PLANNER_PROMPT, SYNTHESIZER_PROMPT templates → agents
+  groq_client.py              chat_completion / chat_completion_hedged     → agents, orchestration
+  unit_normalizer.py          deterministic ₹-crore conversion             → orchestration (pre-Comparator)
+
+orchestration/                orchestration — LangGraph StateGraph
+  graph.py                    FinSightState, nodes, Send fan-out, build_graph()/get_graph() singleton
+  runner.py                   run_pipeline() — astream() driver, per-agent latency accounting
 
 retrieval/                    capability — retrieval primitives
   qdrant_store.py             QdrantStore (async client wrapper)
@@ -30,13 +34,13 @@ ingestion/                    capability — PDF → chunks
   chunker.py                  chunk_document() heading-aware sliding window + dedup
   pipeline.py                 ingest_pdf() / ingest_directory()
 
-agents/                       one module per role
-  router.py                   plan_task()          — SK-native Planner call (reference)
-  retriever.py                RetrieverPlugin      — @kernel_function retrieve()
-  analyst.py                  AnalystPlugin        — @kernel_function analyze()
-  auditor.py                  AuditorPlugin        — @kernel_function audit()
-  comparator.py               ComparatorPlugin     — @kernel_function compare()
-  synthesizer.py              synthesize_report()  — direct chat_completion(SYNTHESIZER_PROMPT)
+agents/                       one module per role — plain async functions, called directly from graph nodes
+  router.py                   plan_task()          — chat_completion(PLANNER_PROMPT)
+  retriever.py                RetrievalService, retrieve_chunks()  — hybrid retrieval
+  analyst.py                  analyze_chunks()     — KPI/claim extraction
+  auditor.py                  audit_claims()       — batch entailment check
+  comparator.py               compare_results()    — cross-doc synthesis
+  synthesizer.py              synthesize_report()  — chat_completion_hedged(SYNTHESIZER_PROMPT)
 
 api/
   main.py                     create_app(): middleware, routers, static, /health
@@ -53,7 +57,7 @@ observability/tracer.py       setup_tracing(), @traced decorator, optional OTel
 evaluation/harness.py         run_harness(query_file) — HTTP client against a running API
 ```
 
-Dependency direction is strictly downward: `api → agents → retrieval/ingestion/core`. `core` depends only on third-party packages. No cycles (`sk_kernel` imports the agent plugins lazily inside `_build_kernel()` to avoid an import cycle).
+Dependency direction is strictly downward: `api → orchestration → agents → retrieval/ingestion/core`. `core` depends only on third-party packages. `orchestration/graph.py` imports `agents` and `core` only — never `api` — so it has no HTTP awareness; the routes import `orchestration`, not the other way around.
 
 ---
 
@@ -63,27 +67,28 @@ Dependency direction is strictly downward: `api → agents → retrieval/ingesti
 
 `Settings(BaseSettings)` — `model_config = SettingsConfigDict(env_file=".env", extra="ignore")`. Single module-level instance `settings`. Fields in [§9](#9-configuration-reference).
 
-### 2.2 `core/sk_kernel.py`
+### 2.2 `core/prompts.py`
 
 | Symbol | Type | Notes |
 |---|---|---|
-| `PLANNER_PROMPT` | `str` | `{user_task}` placeholder (Python `str.format`, **not** SK `{{$var}}`). Asks for "ONLY valid JSON — a list of strings", 2–6 items. |
+| `PLANNER_PROMPT` | `str` | `{user_task}` placeholder (plain `str.format`). Asks for "ONLY valid JSON — a list of strings", 2–6 items. |
 | `SYNTHESIZER_PROMPT` | `str` | `{query} {task_id} {verified_claims} {uncertain_claims} {comparison}` placeholders. Contains the hard output rules (no arithmetic, omit unlabelled derived figures, keep `[converted from …]` labels, exact section headers). |
-| `_PLANNER_PROMPT`, `_SYNTHESIZER_PROMPT` | `str` | Back-compat aliases. |
-| `get_kernel()` | `-> sk.Kernel` | Lazy singleton (`_kernel`). |
-| `get_fallback_kernel()` | `-> sk.Kernel \| None` | Reserve kernel; `None` if `groq_api_key` unset. |
-| `reset_kernel()` | `-> None` | Clears both singletons (test hook). |
-| `_build_kernel(use_fallback=False)` | `-> sk.Kernel` | Adds one `OpenAIChatCompletion` service + 4 native plugins + 2 prompt functions. |
 
-**Endpoint selection inside `_build_kernel`:**
+No framework templating and no kernel/service object — these are plain module-level strings imported directly by `agents/router.py` and `agents/synthesizer.py`.
 
-```
-use_fallback=True                          → Groq creds/model (reserve acts as primary)
-fallback_api_key & _model & _base_url set  → fallback endpoint is primary
-otherwise                                  → Groq endpoint
-```
+### 2.2b `orchestration/graph.py` — the `StateGraph` singleton
 
-Plugins registered: `Retriever`, `Analyst`, `Auditor`, `Comparator` (native). Prompt functions registered: `Planner.decompose`, `Synthesizer.synthesize` (`KernelFunctionFromPrompt`).
+| Symbol | Type | Notes |
+|---|---|---|
+| `FinSightState` | `TypedDict` | Pipeline state; `subtask_results` and `errors` use `Annotated[list[...], operator.add]` reducers so parallel `retrieve_analyze` branches merge automatically. |
+| `build_graph()` | `-> CompiledStateGraph` | Adds the five nodes and edges described in [ARCHITECTURE.md](ARCHITECTURE.md#orchestration-langgraph-stategraph), compiles once. |
+| `get_graph()` | `-> CompiledStateGraph` | Lazy process-wide singleton (`_graph`). |
+| `initial_state(query, task_id, ...)` | `-> FinSightState` | Builds the input state for `graph.astream(...)`. |
+| `fan_out(state)` | `-> list[Send]` | Conditional edge off `plan` — one `Send("retrieve_analyze", {...})` per subtask. |
+| `build_retrievals(state)` | `-> dict[str, list[str]]` | subtask → chunk_ids, for the `AuditLog`. |
+| `AGENT_SEQUENCE` | `list[str]` | Fixed canonical order for the audit log (`agents_invoked`); every stage always executes so this is not derived from node-completion order, which is racy for the parallel audit/compare superstep. |
+
+`orchestration/runner.py::run_pipeline(state, on_event=None)` drives `graph.astream(state, stream_mode=["values", "updates", "custom"])`: forwards `custom`-channel events to `on_event` (the SSE route), keeps the latest `values` snapshot as the final state, and derives per-agent latency from `updates` events — Retriever/Analyst share the fan-out superstep wall-clock, Auditor/Comparator share their superstep wall-clock, applied uniformly to both `/query` and `/query/stream`.
 
 ### 2.3 `core/groq_client.py`
 
@@ -106,22 +111,19 @@ Module singletons: `_primary_client / _primary_model / _reserve_client / _reserv
 
 ## 3. Agent Layer
 
-### 3.1 PlannerAgent
+### 3.1 PlannerAgent — `agents/router.py`
 
-**Reference form** — `agents/router.py::plan_task(user_task: str) -> list[str]`:
-`kernel.invoke("Planner", "decompose", KernelArguments(user_task=…))` → parse JSON list; on failure, parse a bullet/numbered list (`lstrip("-•1234567890.) ")`, keep lines >10 chars, cap 6); ultimate fallback `[user_task]`.
-
-**As actually called in the routes** — `query.py` / `query_stream.py` build the prompt with `PLANNER_PROMPT.format(user_task=req.query)` and call `chat_completion(...)` (blocking) or `chat_completion_hedged(..., hedge_after=8.0)` (stream), then `_parse_subtasks(text, fallback=req.query)` (same parsing logic as `plan_task`). This keeps the planner call on the retry/reserve/hedge path. Both forms share the prompt template.
+`plan_task(user_task: str, *, streaming: bool = False) -> list[str]`: builds `PLANNER_PROMPT.format(user_task=…)`, calls `chat_completion(...)` when `streaming=False` or `chat_completion_hedged(..., hedge_after=8.0)` when `streaming=True`, then `parse_subtasks(text, fallback=user_task)` — parse JSON list; on failure, parse a bullet/numbered list (`lstrip("-•1234567890.) ")`, keep lines >10 chars, cap 6); ultimate fallback `[user_task]`. Called once, from `orchestration/graph.py::plan_node`, with `streaming` taken from `FinSightState`.
 
 Params: `max_tokens=500`, `temperature=0.0`.
 
 ### 3.2 RetrieverAgent — `agents/retriever.py`
 
-`class RetrieverPlugin` holds `QdrantStore`, a lazily-built `BM25Retriever`, the cached `_all_payloads`, an `asyncio.Lock`, and `_collection_ready`.
+`class RetrievalService` (framework-agnostic; owns the retrieval capability, used directly by the graph) holds `QdrantStore`, a lazily-built `BM25Retriever`, the cached `_all_payloads`, an `asyncio.Lock`, and `_collection_ready`. `get_retrieval_service()` returns the process-wide singleton.
 
 `_ensure_bm25()` — double-checked locking: first caller does `ensure_collection()` + `scroll_all()` + builds `BM25Retriever(self._all_payloads)`; subsequent callers (including parallel subtasks) are no-ops. **One `scroll_all` per process lifetime.**
 
-`@kernel_function retrieve(subtask, company_filter="", fiscal_year_filter="") -> str` (JSON array). Builds `filters` dict from non-empty args, calls `retrieve_chunks(...)`, serialises each `RankedChunk` to `{chunk_id, text, source, page, section_type, company, fiscal_year, confidence}`.
+`RetrievalService.retrieve(subtask, company_filter="", fiscal_year_filter="") -> list[RankedChunk]`. Builds `filters` dict from non-empty args, calls `retrieve_chunks(...)`. Called from `orchestration/graph.py::retrieve_analyze_node`, which then serialises each `RankedChunk` via `ranked_chunk_to_dict()` to `{chunk_id, text, source, page, section_type, company, fiscal_year, confidence}` for the Analyst.
 
 `retrieve_chunks(query, store=None, top_k=None, filters=None, bm25=None, all_payloads=None) -> list[RankedChunk]`:
 
@@ -139,7 +141,7 @@ Params: `max_tokens=500`, `temperature=0.0`.
 
 ### 3.3 AnalystAgent — `agents/analyst.py`
 
-`@kernel_function analyze(subtask: str, chunks_json: str) -> str`. Parses `chunks_json`; on `JSONDecodeError` → `{"kpis": [], "claims": []}`. Calls `analyze_chunks`.
+Called directly from `orchestration/graph.py::retrieve_analyze_node` with the chunk list already deserialised (no JSON round-trip).
 
 `analyze_chunks(subtask, chunks_data) -> dict`:
 - Context = first `settings.rerank_top_k` (5) chunks, each rendered as `[Source: …, Page …, Section: …, Confidence: 0.xx]\n<text>`.
@@ -150,7 +152,7 @@ Params: `max_tokens=500`, `temperature=0.0`.
 
 ### 3.4 AuditorAgent — `agents/auditor.py`
 
-`@kernel_function audit(claims_json, confidence_threshold="0.65", original_query="") -> str`. Parse `claims_json`; on failure → `{"verified":[],"uncertain":[],"unverifiable":[]}`. Calls `audit_claims(claims, {}, threshold, original_query=…)`. Serialises `{verified:[to_dict], uncertain:[to_dict], unverifiable:[claim strings]}`.
+Called directly from `orchestration/graph.py::audit_node` with `all_claims = [c for r in state["subtask_results"] for c in r["claims"]]` and `threshold = state.get("confidence_threshold") or settings.confidence_threshold`. The node does not catch exceptions from this call — an auditor failure aborts the whole graph run.
 
 `audit_claims(claims, chunks_by_subtask, confidence_threshold=None, original_query="") -> (verified, uncertain, unverifiable)`:
 - Split: claims with no `supporting_text` → **instant unverifiable** (`Citation.snippet=""`, `confidence=0.0`, reason `"No supporting snippet provided"`).
@@ -169,7 +171,7 @@ Params: `max_tokens=500`, `temperature=0.0`.
 
 ### 3.5 ComparatorAgent — `agents/comparator.py`
 
-`@kernel_function compare(subtask_results_json, original_query) -> str`. Parse (`[]` on failure) → `compare_results`.
+Called directly from `orchestration/graph.py::compare_node`, after `normalize_subtask_results()` has run over `state["subtask_results"]`. The node catches any exception from this call and degrades to an empty comparison (`_EMPTY_COMPARISON`) rather than failing a run that has verified claims.
 
 `compare_results(subtask_results, original_query) -> dict`:
 - Empty → `{deltas:[], cross_document_claims:[], summary:"No data retrieved."}`.
@@ -180,6 +182,8 @@ Params: `max_tokens=500`, `temperature=0.0`.
 `_SYSTEM` contract: **no arithmetic of any kind** (per-unit, currency conversion, scale conversion, % change, any quotient/product/sum/difference); **no cross-company arithmetic**; unit normalisation is **already done** — copy `[converted from …]` labels verbatim, never recompute; missing value → `"N/A — not in retrieved data"`; a delta row requires both values in the **same unit and currency**; summary and `cross_document_claims` are verbatim passthrough only. `anomaly=true` when a comparable figure deviates >15%, or units/currencies mismatch, or a figure contradicts an auditor statement, or (explicitly) when a USD→₹ conversion was applied (`at ₹84/USD` in the label). Output JSON: `{deltas:[{metric, company_a, value_a, period_a, source_a, company_b, value_b, period_b, source_b, delta, anomaly, anomaly_reason}], cross_document_claims:[{claim, sources[], pages[]}], summary}`.
 
 ### 3.6 SynthesizerAgent — `agents/synthesizer.py`
+
+Called from `orchestration/graph.py::synthesize_node`, which waits for both the `audit` and `compare` nodes (the graph's join, expressed as two incoming edges rather than a manual `asyncio.gather`).
 
 `synthesize_report(query, verified_claims, uncertain_claims, comparison, task_id) -> str`:
 - No verified and no uncertain claims → fixed "Insufficient evidence found. …" string (no LLM call).
@@ -371,23 +375,21 @@ Worked examples (from the module docstring):
 
 Request `QueryRequest`: `query: str`, `company_filter: str|None`, `fiscal_year_filter: str|None`, `confidence_threshold: float|None`.
 
-Empty `query` → `HTTPException(400)`. Otherwise runs the six stages ([§5.3 of HLD](HLD.md#53-request-flow--post-query-blocking)); `metrics.record_start()` at entry, `metrics.record_agent_latency(...)` per stage, `_save_audit_log`, `metrics.record_complete`, returns `AnalysisReport.to_dict()`.
+Empty `query` → `HTTPException(400)`. Otherwise builds `orchestration.graph.initial_state(...)` (`streaming=False`) and awaits `orchestration.runner.run_pipeline(state)` — no `on_event` callback, so the graph's custom-stream events are simply not consumed. `metrics.record_start()` at entry, `metrics.record_agent_latency(...)` per returned timing, builds `AuditLog` from the final state via `build_retrievals(final)` and `AGENT_SEQUENCE`, `_save_audit_log`, `metrics.record_complete`, returns `AnalysisReport.to_dict()`. A `run_pipeline` exception surfaces as `HTTPException(500)`.
 
-Shared helpers (also imported by the stream route):
+Module-level helper (also imported by the stream route):
 
 | Helper | Behaviour |
 |---|---|
-| `_parse_subtasks(content, fallback) -> list[str]` | JSON list of strings; else bullet/number parse (>10 chars, ≤6); else `[fallback]`. |
-| `_parse_audit_result(json) -> (verified, uncertain, unverifiable)` | `_deserialize_claims` on `verified` / `uncertain`; `unverifiable` passed through as strings. |
-| `_safe_confidence(raw) -> float` | `float()` guard; NaN / out-of-range → clamp to `[0,1]` or `0.5`. |
-| `_deserialize_claims(list[dict]) -> list[AuditedClaim]` | Build `Citation` + `AuditedClaim`; unknown `audit_status` → `uncertain`; per-item exceptions skipped. |
 | `_save_audit_log(AuditLog)` | `mkdir(exist_ok=True)`, write `audit_logs/<task_id>.json` (`indent=2`). |
+
+Subtask parsing, audit-result deserialisation, and confidence clamping — previously route-level helpers reparsing JSON strings from the Semantic Kernel dispatch layer — no longer exist as separate functions: `orchestration.graph.FinSightState` carries typed values (`AuditedClaim` objects, not JSON) all the way from the graph to the route.
 
 ### 8.3 `POST /query/stream` — `api/routes/query_stream.py`
 
 `StreamingResponse(generate(), media_type="text/event-stream", headers={Cache-Control: no-cache, X-Accel-Buffering: no})`. `_event(name, data)` → `data: {json}\n\n`.
 
-Differences vs. blocking: hedged planner (`hedge_after=8.0`); `_run_subtask(kernel, subtask, company_filter, fiscal_year_filter)` returns `(events, result|None)` and is `gather`-ed; **Auditor + Comparator via `asyncio.gather(_audit(), _compare(), return_exceptions=True)`**; each stage yields an event; auditor exception → `error` event + return; comparator exception → `error` event + empty comparison; final `done` carries `AnalysisReport.to_dict()`. Event sequence: `start, planned, retrieved*, analyzed*, audited, compared, done | error`.
+Builds `initial_state(..., streaming=True)`, then runs `run_pipeline(state, on_event=on_event)` in a driver task (`asyncio.create_task`) while `on_event` pushes each custom-stream event onto an `asyncio.Queue`; the generator drains the queue into SSE frames until the driver pushes a `"final"` or `"error"` sentinel. Same graph as the blocking route — **Auditor and Comparator running concurrently is a property of the graph's superstep, not something this route adds**; the only real differences are the hedged planner call (`streaming=True` in the state) and the queue-based event forwarding. Event sequence: `start, planned, retrieved*, analyzed*, audited, compared, done | error`.
 
 ### 8.4 Other routes
 
@@ -459,12 +461,15 @@ Module singleton `metrics` imported by the routes.
 | `groq_client.chat_completion` | 429 / 503 | retry `[1,2,4]s` then reserve | transparent if a retry/reserve succeeds |
 | `groq_client.chat_completion` | timeout / connection | no retry → reserve | transparent if reserve succeeds |
 | `groq_client` (both fail) | — | `RuntimeError` | HTTP 500 (blocking) / SSE `error` |
-| `query.py::_run_subtask_sync` | Retriever raises / no chunks | return `None` | that subtask contributes nothing |
+| `orchestration/graph.py::retrieve_analyze_node` | Retriever or Analyst raises for one subtask | catch, emit `error` event, append to `state["errors"]`, contribute nothing to `subtask_results` | other subtasks proceed; that subtask's evidence is simply absent |
 | `analyst.analyze_chunks` | bad JSON | regex salvage → `{kpis:[],claims:[]}` | fewer/no claims for the subtask |
 | `auditor._batch_entailment` | bad JSON / short list | pad + truncate → `uncertain` | claims land in UNCERTAIN, not dropped |
+| `orchestration/graph.py::audit_node` | `audit_claims` raises | **not caught** — propagates out of `astream()` | whole run fails; report must never ship unaudited claims |
 | `comparator.compare_results` | bad JSON | regex salvage → empty comparison | report has no "Comparative Analysis" content |
+| `orchestration/graph.py::compare_node` | `compare_results` raises | catch, emit `error` event, return `_EMPTY_COMPARISON` | run still completes with verified/uncertain claims, no comparison |
 | `synthesizer.synthesize_report` | no claims at all | fixed "insufficient evidence" string | honest no-answer |
-| `query_stream.generate` | Planner / Auditor / Synth raises | `metrics.record_error` + `error` event + stop | SSE `error`, stream closes |
+| `query_stream.generate` | `run_pipeline` raises (Planner / Auditor / Synth) | `metrics.record_error` + `error` event + stop | SSE `error`, stream closes |
+| `query.py::run_query` | `run_pipeline` raises | `metrics.record_error` + `HTTPException(500)` | blocking route now fails the same way the stream route does on an Auditor failure (previously it could 500 on a Comparator failure too — that path now degrades instead; see [DECISIONS.md](DECISIONS.md) Decision 11) |
 | `GuardrailsMiddleware` | injection pattern | `JSONResponse(400)` before handler | HTTP 400 |
 | `ingest.ingest_upload` | non-PDF | `HTTPException(400)` | HTTP 400 |
 | `pipeline.ingest_pdf` | file missing | `FileNotFoundError` | HTTP 500 |
@@ -476,8 +481,8 @@ Module singleton `metrics` imported by the routes.
 
 | Want to… | Change |
 |---|---|
-| Swap the LLM provider | `core/config.py` (`groq_*` or `fallback_*`) — no agent code changes; SK service + `groq_client` both read `settings`. |
-| Add an agent | New `@kernel_function` plugin class → register in `core/sk_kernel.py::_build_kernel` → wire a `kernel.invoke` call into the route pipeline. |
+| Swap the LLM provider | `core/config.py` (`groq_*` or `fallback_*`) — no agent code changes; `groq_client` reads `settings`. |
+| Add an agent | New async function in `agents/` → add a node in `orchestration/graph.py::build_graph()` → wire it into the edge list (and `AGENT_SEQUENCE` if it should appear in the audit log). |
 | Add a retrieval signal | Extend `compute_confidence` (add a weight, keep the sum at 1.0) in `retrieval/confidence.py`. |
 | Support another issuer | Extend `_COMPANY_HINTS` in `ingestion/metadata.py`; check heading regexes cover its filing style. |
 | Change chunk sizing | `CHUNK_SIZE` / `CHUNK_OVERLAP` env vars. |
@@ -490,7 +495,7 @@ Module singleton `metrics` imported by the routes.
 
 ## 12. Testing Map
 
-`tests/` (pytest, `asyncio_mode=auto`, `testpaths=["tests"]`) — 102 unit tests, no Qdrant/Groq required:
+`tests/` (pytest, `asyncio_mode=auto`, `testpaths=["tests"]`) — 110 unit tests, no Qdrant/Groq required:
 
 | File | Covers |
 |---|---|
@@ -500,5 +505,6 @@ Module singleton `metrics` imported by the routes.
 | `test_retrieval.py` | `bm25._tokenize`, `BM25Retriever`, `reciprocal_rank_fusion`. |
 | `test_confidence.py` | `compute_confidence` signal math and clamping. |
 | `test_unit_normalizer.py` | INR/USD conversion, label format, no-op cases (50 cases). |
+| `test_graph.py` | `StateGraph` construction (nodes/edges present), `fan_out` `Send` list shape, stubbed end-to-end run through `build_graph()` with agent functions monkeypatched. |
 
 End-to-end: `evaluation/harness.py` runs query files (`happy_path.json`, `adversarial.json`) against a **running** API over HTTP and scores each case by `expected_behavior`; results → `evaluation/results/harness_<ts>.json` (git-ignored). CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, and `pytest tests/` on push/PR to `main`.
