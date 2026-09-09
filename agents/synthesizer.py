@@ -7,7 +7,7 @@ import structlog
 
 from core.groq_client import chat_completion
 from core.models import AuditedClaim
-from core.sk_kernel import SYNTHESIZER_PROMPT
+from core.prompts import SYNTHESIZER_PROMPT
 
 log = structlog.get_logger()
 
