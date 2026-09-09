@@ -8,6 +8,8 @@ Decisions are listed in the order they were made. The date marks when the decisi
 
 ## Decision 1 — Semantic Kernel over LangGraph for multi-agent orchestration
 
+> **Superseded by [Decision 11](#decision-11--langgraph-over-semantic-kernel-reversing-decisions-13) (2026-09-09).** The orchestration layer is now a LangGraph `StateGraph`. The reasoning below is kept for the record.
+
 **Date:** 2026-06-26
 
 **Context:** FinSight requires multi-agent orchestration with dynamic task decomposition. A user asking "compare margins FY2022–2024" should get a different execution plan than "summarise attrition risk across three companies." The orchestration layer must support this without requiring a graph topology to be hardcoded for every query type.
@@ -30,6 +32,8 @@ The `KernelArguments` context chain also eliminates a class of bugs: citations c
 
 ## Decision 2 — kernel.invoke() at every agent hop, not direct Groq API calls
 
+> **Superseded by [Decision 11](#decision-11--langgraph-over-semantic-kernel-reversing-decisions-13) (2026-09-09).** Agent hops are now graph nodes calling plain async functions.
+
 **Date:** 2026-06-26
 
 **Context:** After the initial implementation, the code had `@kernel_function` decorators on agent methods but was calling `chat_completion()` directly inside them. SK was present but not load-bearing — removing it would not have changed behaviour.
@@ -50,6 +54,8 @@ The SK refactor also enforces a single point of LLM dispatch. Adding observabili
 ---
 
 ## Decision 3 — Native plugins for 4 agents, semantic functions for 2
+
+> **Superseded by [Decision 11](#decision-11--langgraph-over-semantic-kernel-reversing-decisions-13) (2026-09-09).** The split now is: four agents are plain async functions invoked as graph nodes; Planner and Synthesizer are prompt-only `chat_completion` calls. The Retriever/Analyst/Auditor/Comparator vs. Planner/Synthesizer distinction survives — only the framework does not.
 
 **Date:** 2026-06-26
 
@@ -223,4 +229,35 @@ SHA-256 deduplication prevents the same passage from being indexed twice when a 
 
 **Reasoning:** Groq's free tier provides sufficient quota for development and demonstration. The OpenAI-compatible endpoint means it slots directly into Semantic Kernel's `OpenAIChatCompletion` connector with a single `base_url` override — no custom connector required. Llama 3.3 70B performs comparably to GPT-4o-mini on structured JSON extraction tasks (the primary use case for Analyst, Auditor, and Comparator agents). Groq's LPU inference is fast enough that the retrieval pipeline (cross-encoder, BM25) becomes the latency bottleneck rather than the LLM calls.
 
-**Tradeoffs accepted:** Groq's free tier has rate limits. High-volume testing will hit them. The LLM backend is abstracted behind `core/groq_client.py` and the SK `OpenAIChatCompletion` service — swapping to OpenAI or Anthropic requires changing `core/sk_kernel.py` and `core/groq_client.py`, not the agent implementations.
+**Tradeoffs accepted:** Groq's free tier has rate limits. High-volume testing will hit them. The LLM backend is abstracted behind `core/groq_client.py` — swapping to OpenAI or Anthropic means changing `core/config.py` (`groq_*` / `fallback_*`) and, if the wire format differs, `core/groq_client.py`. No agent or orchestration code changes.
+
+---
+
+## Decision 11 — LangGraph over Semantic Kernel, reversing Decisions 1–3
+
+**Date:** 2026-09-09
+
+**Context:** Decisions 1–3 chose Semantic Kernel, on the argument that a per-query LLM-generated plan needs a planner-based framework and that a graph framework forces a hardcoded topology. Eighteen months of living with the code showed that argument does not hold:
+
+- The plan is a `list[str]` of subtasks. The pipeline shape around it never varies: plan → (retrieve + analyse per subtask, in parallel) → audit ∥ compare → synthesise. That is a fixed topology with a dynamic fan-out width — exactly what LangGraph's `Send` API is for.
+- SK was never actually load-bearing on the hot path. The routes already called the Planner and Synthesizer through `core/groq_client.chat_completion` directly (to get retry / reserve / hedge), not through `kernel.invoke`. Decision 2's "single dispatch point" was aspirational — `groq_client` was the real one.
+- The `KernelArguments` "context chain cannot drop a citation" benefit (Decision 2) was delivered by serialising every hop to a JSON string and re-parsing it in the next plugin. That round-trip was pure overhead; the citations are already structural fields on typed dataclasses.
+- `semantic-kernel` pulled a large dependency tree and its Python 1.x API churned across minor versions.
+
+**Options considered:**
+
+- **Keep Semantic Kernel.** Zero migration cost. Keeps the JSON round-trip at every hop, the dependency weight, and a framework whose one distinctive feature (planner) the code does not use.
+- **Raw asyncio, no framework.** Minimal dependency. But re-implements fan-out/fan-in, superstep joins, and streaming progress by hand — which is what LangGraph already is.
+- **LangGraph `StateGraph`.** Dynamic fan-out via `Send`; typed `TypedDict` state with reducers instead of JSON strings; `audit ∥ compare` expressed as a superstep join rather than a hand-rolled `asyncio.gather`; a first-class custom stream channel for SSE progress events.
+
+**Decision:** LangGraph `StateGraph`, compiled once as a process singleton (`orchestration/graph.py`). Nodes call the agents' plain async functions directly. `agents/router.py::plan_task` and `agents/synthesizer.py::synthesize_report` stay as `chat_completion` / `chat_completion_hedged` calls on the `groq_client` path.
+
+**Reasoning:** The graph makes the real structure explicit — the fan-out, the parallel audit/compare superstep, the join at synthesis — instead of it being implicit in route code. State is typed and passed by reference, so the JSON round-trip is gone. `Send` covers the only dynamic part (how many retrieval branches) without a static topology. The custom stream channel lets nodes emit `retrieved` / `analyzed` / `audited` / `compared` events without knowing about HTTP, so the SSE route stopped hand-managing an event list. Net: `core/sk_kernel.py` deleted, ~2,000 lines of `semantic-kernel` out of the lock file, one dependency added.
+
+**Tradeoffs accepted:**
+
+- `audit` and `compare` now run concurrently on the blocking route too (previously stream-only). Faster; the audit log's per-agent latency for those two is now "superstep wall-clock" on both routes rather than "sum" on the blocking one.
+- A `ComparatorAgent` failure degrades to an empty comparison on both routes now (previously blocking would 500). An `AuditorAgent` failure still aborts the whole run — the report must never ship unaudited claims.
+- LangGraph has its own API-churn risk. Mitigated by pinning `langgraph>=1.0,<2.0` and keeping all graph code in one module.
+
+**Verification:** `evaluation/harness.py` — 4/4 happy-path, 4/4 adversarial (the previous 3/4 was a timeout on `adv_003`, which the parallel audit/compare superstep removed). Hallucination blocking unchanged (`blocked=10` across the adversarial set). 110 unit tests green, including 8 new graph-construction / stubbed-end-to-end tests in `tests/test_graph.py`.
