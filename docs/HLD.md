@@ -33,7 +33,7 @@ FinSight is a multi-agent Retrieval-Augmented Generation system that produces a 
 ### 1.4 Out of scope
 
 - OCR / scanned-document ingestion.
-- Multi-tenant auth, RBAC, user accounts (the service is single-trust-domain).
+- Full multi-tenant accounts, RBAC, or login flows. Simple per-user identity (API key → `user_id`) *is* in scope as of F14 — see below — but that's a single flat namespace, not real account/role management.
 - Durable/clustered vector storage or horizontal scale-out of the API.
 - Real-time market data; the corpus is whatever has been ingested.
 - Model fine-tuning — all models are used off-the-shelf.
@@ -70,6 +70,9 @@ FinSight is a multi-agent Retrieval-Augmented Generation system that produces a 
 | F11 | Ingest a PDF on demand: parse, chunk, embed, upsert; deduplicate re-ingested content. |
 | F12 | Stream pipeline progress events over SSE for the interactive UI. |
 | F13 | Reject requests whose body matches known prompt-injection patterns. |
+| F14 | Resolve an `Authorization: Bearer <key>` header to a `user_id` when `API_KEYS` is configured; otherwise treat every caller as `user_id="anonymous"`. |
+| F15 | Recall the current session's recent turns (short-term memory) and inject them into the Planner prompt so follow-up queries resolve against prior context. |
+| F16 | Recall a user's semantically relevant past turns across sessions (long-term memory) and inject them into the Planner prompt only — never the Synthesizer, so memory can shape what gets searched for but can never become an unverified claim. |
 
 ### 3.2 Non-functional
 
@@ -123,19 +126,21 @@ External dependencies:
 ┌───────────────────────────────────────────────────────────────────────┐
 │ Interface layer            api/main.py · routes/* · static/*           │
 │   POST /query  POST /query/stream  POST /ingest/upload                 │
-│   GET /metrics /eval/* /health   ·  /ui  /dashboard                    │
-│   ASGI GuardrailsMiddleware (prompt-injection screen)                  │
+│   GET /metrics /eval/* /health  GET/DELETE /sessions /memory           │
+│   ASGI AuthMiddleware (API-key → user_id) · GuardrailsMiddleware       │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Orchestration layer        orchestration/graph.py · runner.py          │
-│   LangGraph StateGraph: plan → Send×N retrieve_analyze →               │
-│   audit ∥ compare (superstep) → synthesize; runner drives astream()    │
+│   LangGraph StateGraph: recall_memory → plan → Send×N retrieve_analyze │
+│   → audit ∥ compare (superstep) → synthesize → remember; runner drives │
+│   astream()                                                             │
 ├───────────────────────────────────────────────────────────────────────┤
-│ Agent layer                agents/*                                    │
+│ Agent layer                agents/*  ·  memory/*                       │
 │   Planner · Retriever · Analyst · Auditor · Comparator · Synthesizer   │
+│   MemoryService (session recall/write, long-term recall)               │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Capability layer                                                       │
 │   retrieval/*  (bm25, embedder, hybrid RRF, reranker, confidence,      │
-│                 qdrant_store)                                          │
+│                 qdrant_store — also backs memory/store.py)             │
 │   ingestion/*  (parser, chunker, metadata, pipeline)                   │
 │   core/unit_normalizer.py  (deterministic currency/scale math)         │
 ├───────────────────────────────────────────────────────────────────────┤
@@ -158,6 +163,8 @@ External dependencies:
 | 6 | **SynthesizerAgent** | Graph node (`synthesize`), prompt (`SYNTHESIZER_PROMPT`) | query + verified + uncertain + comparison → Markdown report | Assemble the report; reproduce only verbatim / pipeline-labelled figures. |
 
 > **Note on orchestration.** `orchestration/graph.py` is a single compiled LangGraph `StateGraph`, a process-wide singleton. Retriever, Analyst, Auditor, and Comparator are plain async functions called directly from graph nodes — there is no dispatch layer between the node and the agent function. Planner and Synthesizer remain prompt-only roles: `agents/router.py::plan_task` and `agents/synthesizer.py::synthesize_report` call `core/groq_client.chat_completion` / `chat_completion_hedged` directly, keeping those two calls on the retry/reserve/hedge path. This replaced a Semantic Kernel dispatch layer; see [DECISIONS.md](DECISIONS.md) Decision 11.
+
+> **Note on memory.** Two additional best-effort nodes bracket the pipeline: `recall_memory` (before `plan`) reads short-term (`session_id`-scoped, recency) and long-term (`user_id`-scoped, vector-similarity) turns via `memory/store.py::MemoryService` and folds them into the Planner prompt only; `remember` (after `synthesize`) writes the completed turn. Neither ever reaches the Synthesizer — memory can shape what gets searched for, never what gets asserted as a claim. See [DECISIONS.md](DECISIONS.md) Decision 12.
 
 ### 5.3 Request flow — `POST /query` (blocking)
 
@@ -258,10 +265,11 @@ Full context in [DECISIONS.md](DECISIONS.md). The load-bearing ones:
 
 ### 8.3 Security
 
+- `AuthMiddleware` (pure ASGI, header-only) resolves `Authorization: Bearer <key>` to a `user_id` via `API_KEYS`; registered after `GuardrailsMiddleware` so it rejects an unauthenticated request (401) before the body is buffered/scanned. Empty `API_KEYS` (default) disables it — every caller is `user_id="anonymous"`. This is identity for scoping memory, not RBAC — see [DECISIONS.md](DECISIONS.md) Decision 12.
 - `GuardrailsMiddleware` (pure ASGI) buffers and scans every `POST`/`PUT` body for injection patterns (`ignore … instructions`, `you are now`, `jailbreak`, `<script`, `[system]`, …) → HTTP 400 before any handler runs. Implemented as pure ASGI specifically so it does not break SSE streaming.
 - No secrets in the repo — `.env` is git-ignored; `.env.example` documents every key.
 - CORS is currently `allow_origins=["*"]` — acceptable for a single-trust-domain demo; tighten before any shared deployment.
-- No authn/z — deployment assumes a trusted network boundary.
+- `/sessions/{id}` and `/memory` enforce access control (404, not just filtering) against the caller's `user_id` — but only when `API_KEYS` is configured. Unconfigured, every caller shares the `"anonymous"` identity and can see each other's memory by design (dev/demo mode).
 
 ### 8.4 Observability
 
@@ -319,7 +327,9 @@ docker-compose.yml
 | Both LLM endpoints down | Request fails | Retry + reserve + hedge | Hard failure surfaced honestly (no fabricated answer) |
 | In-process metrics / BM25 cache lost on restart | Metrics reset; first query rebuilds BM25 | Acceptable for single-process design | N/A |
 | Fixed FX rate drifts from reality | Converted comparatives are approximate | Every conversion is labelled `approx`; anomaly flag set on any USD-converted delta row | Documented assumption |
-| CORS `*` + no auth | Anyone on the network can query | Deploy behind a trusted boundary | Tighten before shared use |
+| CORS `*` + auth optional | Anyone on the network can query; unconfigured deployments share one "anonymous" identity | Configure `API_KEYS` for real per-user isolation; deploy behind a trusted boundary otherwise | Tighten before shared use |
+| Memory outage (Qdrant `finsight_memory` unavailable) | `recall_memory`/`remember` nodes fail | Both are best-effort — catch and degrade to no context / no write | Query still succeeds; that turn just isn't recalled later |
+| Long-term memory content is unfiltered LLM-adjacent user history | A user's own past queries shape future plans, unreviewed | Memory only ever reaches the Planner prompt — it never becomes a claim or reaches the Synthesizer | Documented in Decision 12; `/memory` lets a user inspect/delete their own history |
 
 ---
 
