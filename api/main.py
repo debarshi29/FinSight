@@ -10,12 +10,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from api.middleware.auth import AuthMiddleware
 from api.middleware.guardrails import GuardrailsMiddleware
 from api.routes import eval as eval_router
 from api.routes import ingest as ingest_router
+from api.routes import memory as memory_router
 from api.routes import metrics as metrics_router
 from api.routes import query as query_router
 from api.routes import query_stream as query_stream_router
+from api.routes import sessions as sessions_router
 from core.config import settings
 from observability.tracer import setup_tracing
 
@@ -45,12 +48,18 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(GuardrailsMiddleware)
+    # Added last so it runs first (Starlette executes middleware in reverse
+    # add-order) — reject a missing/bad key before spending work buffering and
+    # scanning the body for injection patterns.
+    app.add_middleware(AuthMiddleware)
 
     app.include_router(ingest_router.router)
     app.include_router(query_router.router)
     app.include_router(query_stream_router.router)
     app.include_router(eval_router.router)
     app.include_router(metrics_router.router)
+    app.include_router(sessions_router.router)
+    app.include_router(memory_router.router)
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():

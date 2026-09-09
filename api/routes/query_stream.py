@@ -6,7 +6,7 @@ import time
 import uuid
 
 import structlog
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from api.metrics_store import metrics
@@ -25,14 +25,15 @@ def _event(name: str, data: dict) -> str:
 
 
 @router.post("/stream")
-async def run_query_stream(req: QueryRequest):
+async def run_query_stream(req: QueryRequest, request: Request):
+    user_id = getattr(request.state, "user_id", "anonymous")
+
     async def generate():
         task_id = str(uuid.uuid4())
         start_ms = time.time()
 
         metrics.record_start()
-        log.info("stream.start", task_id=task_id[:8], query=req.query[:80])
-        yield _event("start", {"task_id": task_id, "query": req.query})
+        log.info("stream.start", task_id=task_id[:8], query=req.query[:80], user_id=user_id)
 
         state = initial_state(
             req.query,
@@ -41,6 +42,11 @@ async def run_query_stream(req: QueryRequest):
             fiscal_year_filter=req.fiscal_year_filter,
             confidence_threshold=req.confidence_threshold,
             streaming=True,
+            user_id=user_id,
+            session_id=req.session_id,
+        )
+        yield _event(
+            "start", {"task_id": task_id, "query": req.query, "session_id": state["session_id"]}
         )
 
         # The graph runs in a driver task and pushes progress events onto a queue;
@@ -105,6 +111,8 @@ async def run_query_stream(req: QueryRequest):
                 blocked_unverifiable=blocked,
                 agents_invoked=list(AGENT_SEQUENCE),
                 latency_ms=latency_ms,
+                user_id=user_id,
+                session_id=final.get("session_id", state["session_id"]),
             )
             _save_audit_log(audit_log)
 
