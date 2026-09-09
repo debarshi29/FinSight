@@ -20,7 +20,7 @@ Input: "Compare Infosys and TCS operating margins FY2022-2024"
 Output: ["Infosys operating margin FY2022", "Infosys operating margin FY2023",
 "Infosys operating margin FY2024", "TCS operating margin FY2022",
 "TCS operating margin FY2023", "TCS operating margin FY2024"]
-
+{memory_context}
 User Task: {user_task}"""
 
 SYNTHESIZER_PROMPT = """You are a financial report writer. Assemble a structured professional report from the verified evidence below.
