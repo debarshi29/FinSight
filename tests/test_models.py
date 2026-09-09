@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from core.models import (
     AuditedClaim,
+    AuditLog,
     AuditStatus,
     Chunk,
     Citation,
+    MemoryRecord,
     SectionType,
 )
 
@@ -102,3 +104,49 @@ def test_chunk_missing_optional_fields_defaults():
     chunk = Chunk.from_payload(payload)
     assert chunk.fiscal_year == ""
     assert chunk.company == ""
+
+
+def test_memory_record_roundtrip():
+    record = MemoryRecord(
+        memory_id="m1",
+        user_id="alice",
+        session_id="s1",
+        task_id="t1",
+        text="Query: margins\nPlan: infosys margin fy24\nSummary: ok",
+        timestamp="2026-09-09T00:00:00Z",
+    )
+    payload = record.to_payload()
+    record2 = MemoryRecord.from_payload(payload)
+    assert record2 == record
+
+
+def test_memory_record_from_payload_defaults_task_id():
+    payload = {
+        "memory_id": "m1",
+        "user_id": "alice",
+        "session_id": "s1",
+        "text": "text",
+        "timestamp": "2026-09-09T00:00:00Z",
+        # task_id intentionally absent
+    }
+    record = MemoryRecord.from_payload(payload)
+    assert record.task_id == ""
+
+
+def test_audit_log_defaults_user_and_session():
+    log = AuditLog(
+        task_id="t1",
+        timestamp="2026-09-09T00:00:00Z",
+        user_query="q",
+        plan=[],
+        retrievals={},
+        claims=[],
+        flagged_uncertain=[],
+        blocked_unverifiable=[],
+        agents_invoked=[],
+        latency_ms=1,
+    )
+    assert log.user_id == "anonymous"
+    assert log.session_id == ""
+    d = log.to_dict()
+    assert d["user_id"] == "anonymous" and d["session_id"] == ""

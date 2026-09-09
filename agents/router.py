@@ -28,16 +28,31 @@ def parse_subtasks(content: str, fallback: str) -> list[str]:
     return subtasks if subtasks else [fallback]
 
 
-async def plan_task(user_task: str, *, streaming: bool = False) -> list[str]:
+async def plan_task(
+    user_task: str, *, streaming: bool = False, memory_context: str = ""
+) -> list[str]:
     """PlannerAgent — decompose a query into 2–6 ordered retrieval subtasks.
 
     A plain LLM call on the retry/reserve path (``chat_completion``), or the
     hedged path (``chat_completion_hedged``, ``hedge_after=8s``) when serving the
     streaming endpoint. The plan is regenerated per query — there is no fixed
     topology.
+
+    ``memory_context``, when non-empty, is recalled session/user history
+    (``memory/consolidate.py::format_memory_context``) that helps resolve
+    follow-up queries ("what about TCS?"). It only ever reaches this prompt —
+    never the Synthesizer — so it can shape subtasks but can never become an
+    unverified claim in the report.
     """
-    log.info("planner.start", task=user_task[:100], streaming=streaming)
-    messages = [{"role": "user", "content": PLANNER_PROMPT.format(user_task=user_task)}]
+    log.info(
+        "planner.start", task=user_task[:100], streaming=streaming, has_memory=bool(memory_context)
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": PLANNER_PROMPT.format(user_task=user_task, memory_context=memory_context),
+        }
+    ]
 
     if streaming:
         text = await chat_completion_hedged(

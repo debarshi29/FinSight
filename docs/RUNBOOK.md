@@ -8,7 +8,7 @@ Practical procedures for running, observing, and recovering the system. Design r
 
 | Process | Port | State it owns |
 |---|---|---|
-| `finsight_api` (uvicorn, **1 worker**) | 8000 | SK kernel singleton, BM25 corpus cache, `MetricsStore`, loaded MiniLM models — all in-process, all lost on restart. |
+| `finsight_api` (uvicorn, **1 worker**) | 8000 | Compiled `StateGraph` singleton, `MemoryService`, BM25 corpus cache, `MetricsStore`, loaded MiniLM models — all in-process, all lost on restart. |
 | `finsight_qdrant` | 6333 (HTTP), 6334 (gRPC) | On-disk vectors + payload under `./qdrant_storage`. |
 | LLM endpoint(s) | external | Stateless. Primary = Groq unless `FALLBACK_*` set (then fallback is primary, Groq is reserve). |
 
@@ -96,11 +96,17 @@ curl -X POST http://localhost:8000/query -H 'Content-Type: application/json' \
 # streaming (progress events + final result)
 curl -N -X POST http://localhost:8000/query/stream -H 'Content-Type: application/json' \
   -d '{"query":"..."}'
+
+# follow-up in the same session — reuse the session_id from a prior response's audit_log
+curl -X POST http://localhost:8000/query -H 'Content-Type: application/json' \
+  -d '{"query":"What about TCS for the same period?", "session_id":"<session_id>"}'
 ```
 
-Optional body fields: `company_filter`, `fiscal_year_filter`, `confidence_threshold`.
+Optional body fields: `company_filter`, `fiscal_year_filter`, `confidence_threshold`, `session_id` (omit to start a new session — the response's `audit_log.session_id` is minted for you and safe to reuse).
 
-SSE event order: `start → planned → retrieved* → analyzed* → audited → compared → done` (or `error` with a `stage`).
+Add `-H 'Authorization: Bearer <key>'` when `API_KEYS` is configured (§1); omitted, every caller is `user_id="anonymous"`.
+
+SSE event order: `start → memory_recalled → planned → retrieved* → analyzed* → audited → compared → remembered → done` (or `error` with a `stage`).
 
 ---
 
@@ -140,7 +146,7 @@ Set `OTEL_ENABLED=true` and `OTEL_ENDPOINT=<otlp-grpc>` in `.env`. If the OTel p
 
 ---
 
-## 7. Audit logs
+## 7. Audit logs, sessions, and memory
 
 One JSON file per run at `audit_logs/<task_id>.json` (dir = `AUDIT_LOG_DIR`, volume-mounted in compose, git-ignored).
 
@@ -149,13 +155,26 @@ curl -s http://localhost:8000/eval/audit-logs            # newest 20 filenames +
 curl -s http://localhost:8000/eval/audit-logs/<task_id>  # full log
 ```
 
-Each log carries `plan`, `retrievals` (subtask → chunk_ids), `claims` (verified + uncertain), `flagged_uncertain`, `blocked_unverifiable`, `agents_invoked`, `latency_ms`. To review what the AuditorAgent excluded, read `blocked_unverifiable`.
+Each log carries `user_id`, `session_id`, `plan`, `retrievals` (subtask → chunk_ids), `claims` (verified + uncertain), `flagged_uncertain`, `blocked_unverifiable`, `agents_invoked`, `latency_ms`. To review what the AuditorAgent excluded, read `blocked_unverifiable`; to see whether memory shaped the plan, check `agents_invoked` for `MemoryAgent` and compare the `plan` against the caller's session history.
 
 The directory grows unbounded — there is no rotation. Prune with a cron/job if disk matters:
 
 ```bash
 find audit_logs -name '*.json' -mtime +30 -delete
 ```
+
+### Sessions and memory
+
+Short-term (session) and long-term (per-user) memory live in a separate Qdrant collection, `finsight_memory` (`MEMORY_COLLECTION`), built the first time `recall_memory`/`remember` runs — same lazy-init pattern as the `finsight_chunks` BM25 index.
+
+```bash
+curl -s http://localhost:8000/sessions/<session_id>   # this session's turns (404 if not yours)
+curl -X DELETE http://localhost:8000/sessions/<session_id>
+curl -s http://localhost:8000/memory                  # your long-term records
+curl -X DELETE http://localhost:8000/memory            # wipe your long-term memory
+```
+
+`MEMORY_ENABLED=false` disables both `recall_memory` and `remember` outright (useful for a deterministic eval run, or to rule out memory when diagnosing latency). Both nodes are best-effort regardless — a `finsight_memory`/Qdrant outage degrades to no recalled context / no write, never a failed query; look for `stage: "MemoryAgent"` in an `error` event or the audit log's `agents_invoked` list to confirm it ran.
 
 ---
 
@@ -170,8 +189,10 @@ find audit_logs -name '*.json' -mtime +30 -delete
 | `blocked_rate` unexpectedly high | Threshold too strict, or weak sources | Lower `CONFIDENCE_THRESHOLD`; inspect `blocked_unverifiable` + `audit_reason` in the log |
 | Answers contain a computed ratio / converted figure without a label | LLM broke an extraction rule | Inspect the audit log; tighten the Analyst/Comparator/Synthesizer prompts; confirm `unit_normalizer` ran (stream/sync both call `normalize_subtask_results`) |
 | `400 Request contains disallowed content` | Query body matched an injection pattern | Legit? Adjust `_INJECTION_PATTERNS` in `api/middleware/guardrails.py` |
+| `401 Missing or invalid API key` | `API_KEYS` is configured and the caller sent no/wrong `Authorization: Bearer <key>` | Check the key against `API_KEYS`; unset `API_KEYS` to fall back to unauthenticated `anonymous` |
+| Follow-up query ignores prior context (e.g. "what about TCS?" doesn't resolve) | `session_id` not reused, `MEMORY_ENABLED=false`, or `finsight_memory` degraded silently | Confirm the client is echoing `audit_log.session_id` from the prior response; check `agents_invoked` includes `MemoryAgent`; check for a `memory_recalled` event with `short_term=0` |
 | Metrics all zero after a while | API restarted (in-process store) | Expected; no action |
-| Qdrant unhealthy on boot | Port 6333 taken, or corrupt `qdrant_storage` | Free the port; `docker compose down -v` to reset storage (destroys the index — re-ingest) |
+| Qdrant unhealthy on boot | Port 6333 taken, or corrupt `qdrant_storage` | Free the port; `docker compose down -v` to reset storage (destroys **both** collections — `finsight_chunks` and `finsight_memory` — re-ingest documents; memory is not re-derivable) |
 
 ---
 
@@ -179,7 +200,8 @@ find audit_logs -name '*.json' -mtime +30 -delete
 
 | Asset | Backup | Restore |
 |---|---|---|
-| Vector index | Copy `./qdrant_storage/` while stopped, **or** just keep the source PDFs and re-ingest | Restore the dir, or re-run ingestion |
+| Vector index (`finsight_chunks`) | Copy `./qdrant_storage/` while stopped, **or** just keep the source PDFs and re-ingest | Restore the dir, or re-run ingestion |
+| Memory (`finsight_memory`) | Shares `./qdrant_storage/` with the vector index — same copy covers both | Restore the dir. **Not** re-derivable from anything else (unlike the vector index) — a user's session/long-term history is genuinely lost if this isn't backed up separately from "just re-ingest the PDFs" |
 | Audit logs | Copy `./audit_logs/` | Copy back |
 | Config | `.env` (store in a secret manager, never in git) | Recreate from `.env.example` |
 | Source PDFs | `./data/filings/` (git-ignored) | Re-download from the issuers |
@@ -204,7 +226,7 @@ Thresholds (`CONFIDENCE_THRESHOLD`) can also be overridden per request via the `
 ## 11. Deployment hardening checklist (before any shared/network deployment)
 
 - [ ] Restrict CORS — `allow_origins` is `["*"]` in `api/main.py`.
-- [ ] Put the API behind an authenticating reverse proxy — there is no authn/z.
+- [ ] Configure `API_KEYS` (or put the API behind an authenticating reverse proxy) — unconfigured, every caller shares one `"anonymous"` identity and can see each other's session/long-term memory.
 - [ ] Move `GROQ_API_KEY` / `FALLBACK_*` into a secret manager, not a file on disk.
 - [ ] Add audit-log rotation/retention.
 - [ ] Pin the Qdrant image tag (currently `:latest`).

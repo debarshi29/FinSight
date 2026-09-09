@@ -20,8 +20,12 @@ orchestration/                orchestration — LangGraph StateGraph
   graph.py                    FinSightState, nodes, Send fan-out, build_graph()/get_graph() singleton
   runner.py                   run_pipeline() — astream() driver, per-agent latency accounting
 
+memory/                       per-user session + cross-session memory
+  store.py                    MemoryService, get_memory_service()/reset_memory_service() singleton
+  consolidate.py               build_turn_text(), format_memory_context() — pure functions, no LLM call
+
 retrieval/                    capability — retrieval primitives
-  qdrant_store.py             QdrantStore (async client wrapper)
+  qdrant_store.py             QdrantStore (async client wrapper) — also backs memory/store.py
   embedder.py                 SentenceTransformer singleton (384-dim)
   bm25.py                     BM25Retriever (rank-bm25 over payload text)
   hybrid.py                   reciprocal_rank_fusion(lists, k=60)
@@ -45,19 +49,22 @@ agents/                       one module per role — plain async functions, cal
 api/
   main.py                     create_app(): middleware, routers, static, /health
   metrics_store.py            MetricsStore + module singleton `metrics`
+  middleware/auth.py          AuthMiddleware (pure ASGI) — API key → request.state.user_id
   middleware/guardrails.py    GuardrailsMiddleware (pure ASGI) + detect_injection()
   routes/query.py             POST /query (blocking) + shared parse/persist helpers
   routes/query_stream.py      POST /query/stream (SSE); imports helpers from query.py
   routes/ingest.py            POST /ingest/upload
   routes/eval.py              GET /eval/collection, /eval/audit-logs[/{id}]
   routes/metrics.py           GET /metrics
+  routes/sessions.py          GET/DELETE /sessions/{id} — caller's own turns only
+  routes/memory.py            GET/DELETE /memory — caller's own long-term records
 
 observability/tracer.py       setup_tracing(), @traced decorator, optional OTel
 
 evaluation/harness.py         run_harness(query_file) — HTTP client against a running API
 ```
 
-Dependency direction is strictly downward: `api → orchestration → agents → retrieval/ingestion/core`. `core` depends only on third-party packages. `orchestration/graph.py` imports `agents` and `core` only — never `api` — so it has no HTTP awareness; the routes import `orchestration`, not the other way around.
+Dependency direction is strictly downward: `api → orchestration → agents/memory → retrieval/ingestion/core`. `core` depends only on third-party packages. `orchestration/graph.py` imports `agents`, `memory`, and `core` only — never `api` — so it has no HTTP awareness; the routes import `orchestration`, not the other way around. `memory/store.py` depends on `retrieval/qdrant_store.py` and `retrieval/embedder.py` (reused, not duplicated) but nothing in `retrieval/` depends on `memory/`.
 
 ---
 
@@ -447,6 +454,11 @@ Module singleton `metrics` imported by the routes.
 | `confidence_threshold` | `0.65` | Auditor VERIFIED cutoff. |
 | `hallucination_fallback_threshold` | `0.50` | UNCERTAIN floor (below → UNVERIFIABLE). |
 | `audit_log_dir` | `audit_logs` | Audit-log output directory. |
+| `api_keys` | `""` | Comma-separated `key:user_id` pairs. Empty disables auth — every caller is `user_id="anonymous"`. |
+| `memory_collection` | `finsight_memory` | Qdrant collection for `MemoryRecord`s. |
+| `memory_enabled` | `true` | Kill switch — `false` skips `recall_memory`/`remember` entirely. |
+| `session_max_turns` | `6` | Max short-term turns recalled per session. |
+| `long_term_top_k` | `3` | Max long-term records recalled per query. |
 | `otel_enabled` | `false` | Enable OTLP span export. |
 | `otel_endpoint` | `http://localhost:4317` | OTLP gRPC endpoint. |
 | `log_level` | `INFO` | structlog filtering level. |
@@ -471,6 +483,9 @@ Module singleton `metrics` imported by the routes.
 | `query_stream.generate` | `run_pipeline` raises (Planner / Auditor / Synth) | `metrics.record_error` + `error` event + stop | SSE `error`, stream closes |
 | `query.py::run_query` | `run_pipeline` raises | `metrics.record_error` + `HTTPException(500)` | blocking route now fails the same way the stream route does on an Auditor failure (previously it could 500 on a Comparator failure too — that path now degrades instead; see [DECISIONS.md](DECISIONS.md) Decision 11) |
 | `GuardrailsMiddleware` | injection pattern | `JSONResponse(400)` before handler | HTTP 400 |
+| `AuthMiddleware` | missing/invalid key when `API_KEYS` set | `JSONResponse(401)` before handler | HTTP 401 |
+| `orchestration/graph.py::recall_memory_node` | Qdrant/embedding failure | catch, emit `error` event, `memory_context=""` | query proceeds with no recalled context |
+| `orchestration/graph.py::remember_node` | Qdrant/embedding failure | catch, emit `error` event | already-synthesized report still returned; that turn just isn't recalled later |
 | `ingest.ingest_upload` | non-PDF | `HTTPException(400)` | HTTP 400 |
 | `pipeline.ingest_pdf` | file missing | `FileNotFoundError` | HTTP 500 |
 | `retrieve_chunks` | empty collection | `log.warning` → `[]` | "insufficient evidence" report |
@@ -483,6 +498,8 @@ Module singleton `metrics` imported by the routes.
 |---|---|
 | Swap the LLM provider | `core/config.py` (`groq_*` or `fallback_*`) — no agent code changes; `groq_client` reads `settings`. |
 | Add an agent | New async function in `agents/` → add a node in `orchestration/graph.py::build_graph()` → wire it into the edge list (and `AGENT_SEQUENCE` if it should appear in the audit log). |
+| Change how memory is recalled/ranked | `memory/store.py::MemoryService.recall_session` / `recall_long_term` — both are plain Qdrant filter/vector-search calls, no framework to route around. |
+| Add real per-user access control beyond API keys | `api/middleware/auth.py::_parse_api_keys` / `AuthMiddleware` — swap the flat `{key: user_id}` dict for a real identity provider without touching the routes (they only read `request.state.user_id`). |
 | Add a retrieval signal | Extend `compute_confidence` (add a weight, keep the sum at 1.0) in `retrieval/confidence.py`. |
 | Support another issuer | Extend `_COMPANY_HINTS` in `ingestion/metadata.py`; check heading regexes cover its filing style. |
 | Change chunk sizing | `CHUNK_SIZE` / `CHUNK_OVERLAP` env vars. |
@@ -495,16 +512,18 @@ Module singleton `metrics` imported by the routes.
 
 ## 12. Testing Map
 
-`tests/` (pytest, `asyncio_mode=auto`, `testpaths=["tests"]`) — 110 unit tests, no Qdrant/Groq required:
+`tests/` (pytest, `asyncio_mode=auto`, `testpaths=["tests"]`) — 134 unit tests, no Qdrant/Groq required:
 
 | File | Covers |
 |---|---|
-| `test_models.py` | dataclass round-trips, enum values, `to_dict` / `from_payload`. |
+| `test_models.py` | dataclass round-trips, enum values, `to_dict` / `from_payload`, including `MemoryRecord` and `AuditLog`'s `user_id`/`session_id` defaults. |
 | `test_chunker.py` | `ingestion.chunker._deduplicate`, `_make_chunk_id`. |
 | `test_ingestion.py` | `ingestion/metadata` detectors and section weights. |
 | `test_retrieval.py` | `bm25._tokenize`, `BM25Retriever`, `reciprocal_rank_fusion`. |
 | `test_confidence.py` | `compute_confidence` signal math and clamping. |
 | `test_unit_normalizer.py` | INR/USD conversion, label format, no-op cases (50 cases). |
-| `test_graph.py` | `StateGraph` construction (nodes/edges present), `fan_out` `Send` list shape, stubbed end-to-end run through `build_graph()` with agent functions monkeypatched. |
+| `test_graph.py` | `StateGraph` construction (nodes/edges present, including `recall_memory`/`remember`), `fan_out` `Send` list shape, stubbed end-to-end run through `build_graph()` with agent and memory functions monkeypatched, memory-recall-reaches-planner, memory-outage-degrades-gracefully, memory-disabled-skips-recall. |
+| `test_memory.py` | `memory/consolidate.py::build_turn_text` / `format_memory_context` as pure functions — no Qdrant. |
+| `test_auth.py` | `AuthMiddleware` — key parsing, bearer-token extraction, pass-through-as-anonymous when unconfigured, 401 on missing/bad key when configured, exempt-path bypass. First test in this repo to exercise ASGI middleware via `httpx.ASGITransport`. |
 
 End-to-end: `evaluation/harness.py` runs query files (`happy_path.json`, `adversarial.json`) against a **running** API over HTTP and scores each case by `expected_behavior`; results → `evaluation/results/harness_<ts>.json` (git-ignored). CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, and `pytest tests/` on push/PR to `main`.

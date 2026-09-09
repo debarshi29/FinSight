@@ -261,3 +261,39 @@ SHA-256 deduplication prevents the same passage from being indexed twice when a 
 - LangGraph has its own API-churn risk. Mitigated by pinning `langgraph>=1.0,<2.0` and keeping all graph code in one module.
 
 **Verification:** `evaluation/harness.py` — 4/4 happy-path, 4/4 adversarial (the previous 3/4 was a timeout on `adv_003`, which the parallel audit/compare superstep removed). Hallucination blocking unchanged (`blocked=10` across the adversarial set). 110 unit tests green, including 8 new graph-construction / stubbed-end-to-end tests in `tests/test_graph.py`.
+
+---
+
+## Decision 12 — Per-user identity (API keys) and short/long-term memory (Qdrant)
+
+**Date:** 2026-09-09
+
+**Context:** Every `/query` call was stateless and anonymous: no identity, no way to say "continue where I left off," and no way for the Planner to know a user already asked about a topic in a prior session. HLD §1.4 explicitly carried "multi-tenant auth, RBAC, user accounts" as out of scope, written for a single-trust-domain demo. Two things needed adding: (1) enough identity to scope memory per user without building a real account system, and (2) memory itself — short-term (this session's recent turns) and long-term (this user's past sessions), so a follow-up like "what about TCS?" resolves against prior context.
+
+**Options considered — identity:**
+
+- **Full auth (JWT/OAuth, accounts, signup).** Real access control, but scope far beyond what a demo/portfolio system needs, and it doesn't change what the memory feature itself requires (just a `user_id` to key by).
+- **Client-supplied `user_id`, unauthenticated.** Zero auth work, but no actual access control — anyone can read anyone's memory by guessing an id.
+- **API key → `user_id` mapping (chosen).** `API_KEYS="key:user_id,..."` in config, checked by a new pure-ASGI `AuthMiddleware`. Real (if simple) access control — a session/memory endpoint can 404 on another user's data — with no new infrastructure. Empty by default: local dev, the eval harness, and CI run unauthenticated as `user_id="anonymous"`, so the feature is opt-in.
+
+**Options considered — memory storage:**
+
+- **Relational store (SQLite/Postgres).** Cleaner for exact per-user history browsing, but a new dependency and connection this system has never needed.
+- **In-process only (dict/TTL cache).** No persistence, doesn't survive a restart, and gives up long-term recall entirely — the feature's second half.
+- **New Qdrant collection (chosen).** `finsight_memory`, same infrastructure the retrieval pipeline already runs. `retrieval/qdrant_store.py::QdrantStore` took two additive constructor params (`collection`, `vector_size`) instead of a second client class — every existing call site is unaffected.
+
+**Options considered — long-term memory content:**
+
+- **LLM-consolidated summaries.** A periodic LLM pass distills several turns into durable "facts." More compact, but adds an LLM hop whose output is itself unverified text, in a system whose entire premise is that nothing unverified reaches the user.
+- **Raw per-turn records (chosen).** Every completed turn is written once as a `MemoryRecord` (query + plan + summary excerpt — `memory/consolidate.py::build_turn_text`, no LLM call). The same records serve both short-term recall (filter by `session_id`, most recent) and long-term recall (filter by `user_id`, vector search on the current query) — no separate scope field, no consolidation step, and every recalled item traces back to a real `task_id` an operator can look up in `audit_logs/`.
+
+**Decision:** `AuthMiddleware` (header-only, no body buffering, registered after `GuardrailsMiddleware` so it rejects before the body is scanned) resolves `Authorization: Bearer <key>` to a `user_id`. `MemoryService` (`memory/store.py`) wraps a `QdrantStore` pointed at `finsight_memory`. Two new best-effort graph nodes — `recall_memory` (before `plan`) and `remember` (after `synthesize`) — read and write it.
+
+**Reasoning:** The load-bearing constraint on this feature is the same one the rest of the system is built around: **recalled memory reaches the Planner prompt only, never the Synthesizer.** It can bias what gets searched for; it can never become an unverified figure in the report, because it never touches the claims/citations path at all. `recall_memory` and `remember` are both best-effort — a memory outage degrades to no context / no write, exactly like `compare_node`, rather than failing a query over a non-critical subsystem. `AuditLog` now carries `user_id`/`session_id` so a reviewer can see whose run it was and whether memory was in play, keeping the "nothing about a run is a black box" guarantee intact.
+
+**Tradeoffs accepted:**
+
+- No real RBAC — an API key identifies a user, nothing more. Multi-tenant accounts/roles remain explicitly out of scope.
+- Long-term recall is plain vector similarity over a user's whole history, not curated or ranked by recency/importance beyond `long_term_top_k`. Good enough for "did I ask about this before," not a sophisticated memory system.
+- `user_id="anonymous"` is shared by every unauthenticated caller when `API_KEYS` is unset — their session/long-term memories are mutually visible by design (dev/demo mode), which is why enabling real isolation requires configuring `API_KEYS`.
+- Two more Qdrant round-trips per query (recall + write), both best-effort and off the compliance-critical path, so a slow/down memory collection adds latency risk but not correctness risk.

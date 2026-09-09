@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from api.metrics_store import metrics
@@ -24,18 +24,20 @@ class QueryRequest(BaseModel):
     company_filter: str | None = None
     fiscal_year_filter: str | None = None
     confidence_threshold: float | None = None
+    session_id: str | None = None  # omit to start a new session
 
 
 @router.post("")
-async def run_query(req: QueryRequest):
+async def run_query(req: QueryRequest, request: Request):
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
     task_id = str(uuid.uuid4())
     start_ms = time.time()
+    user_id = getattr(request.state, "user_id", "anonymous")
 
     metrics.record_start()
-    log.info("query.start", task_id=task_id, query=req.query[:100])
+    log.info("query.start", task_id=task_id, query=req.query[:100], user_id=user_id)
 
     state = initial_state(
         req.query,
@@ -44,6 +46,8 @@ async def run_query(req: QueryRequest):
         fiscal_year_filter=req.fiscal_year_filter,
         confidence_threshold=req.confidence_threshold,
         streaming=False,
+        user_id=user_id,
+        session_id=req.session_id,
     )
 
     try:
@@ -76,6 +80,8 @@ async def run_query(req: QueryRequest):
         blocked_unverifiable=blocked,
         agents_invoked=list(AGENT_SEQUENCE),
         latency_ms=latency_ms,
+        user_id=user_id,
+        session_id=final.get("session_id", ""),
     )
     _save_audit_log(audit_log)
 

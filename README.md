@@ -310,16 +310,20 @@ Results are written as JSON to `evaluation/results/`. Current scores: **4/4 happ
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/query` | POST | Blocking analysis. Body: `{"query": "...", "company_filter": "...", "fiscal_year_filter": "..."}` |
-| `/query/stream` | POST | SSE streaming — emits `start`, `planned`, `retrieved`, `analyzed`, `audited`, `compared`, `done`, `error` events |
+| `/query` | POST | Blocking analysis. Body: `{"query": "...", "company_filter": "...", "fiscal_year_filter": "...", "session_id": "..."}` (`session_id` optional — omit to start a new session) |
+| `/query/stream` | POST | SSE streaming — emits `start`, `memory_recalled`, `planned`, `retrieved`, `analyzed`, `audited`, `compared`, `remembered`, `done`, `error` events |
 | `/ingest/upload` | POST | Upload a PDF for ingestion. Multipart form: `file=@report.pdf` |
 | `/eval/collection` | GET | Qdrant collection stats (vector count, status) |
 | `/eval/audit-logs` | GET | List stored audit log files |
 | `/eval/audit-logs/{id}` | GET | Retrieve a specific audit log |
+| `/sessions/{id}` | GET / DELETE | Read or delete the caller's own session turns (short-term memory) |
+| `/memory` | GET / DELETE | Read or clear the caller's own long-term memory records |
 | `/metrics` | GET | Per-agent latency percentiles, error rate, query count |
 | `/health` | GET | Liveness check — returns `{"status": "ok"}` |
 | `/ui` | GET | Web UI (query interface + live pipeline visualiser) |
 | `/dashboard` | GET | Metrics dashboard |
+
+Every endpoint except `/health`, `/ui*`, `/dashboard`, and `/docs` honors `Authorization: Bearer <key>` when `API_KEYS` is configured (see below); unconfigured, every caller is `user_id="anonymous"`.
 
 Full interactive docs: `http://localhost:8000/docs`
 
@@ -336,6 +340,10 @@ All variables are optional except `GROQ_API_KEY`. Copy `.env.example` to `.env` 
 | `FALLBACK_API_KEY` | — | Reserve LLM API key (OpenAI-compatible) |
 | `FALLBACK_MODEL` | — | Reserve LLM model ID |
 | `FALLBACK_BASE_URL` | — | Reserve LLM base URL |
+| `API_KEYS` | — | `key:user_id` pairs, comma-separated. Empty disables auth (every request is `anonymous`) |
+| `MEMORY_ENABLED` | `true` | Kill switch for the short/long-term memory nodes |
+| `SESSION_MAX_TURNS` | `6` | Max short-term turns recalled per session |
+| `LONG_TERM_TOP_K` | `3` | Max long-term records recalled per query |
 | `QDRANT_HOST` | `localhost` | Qdrant host (`qdrant` inside Docker Compose) |
 | `QDRANT_PORT` | `6333` | Qdrant HTTP port |
 | `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`) |
@@ -388,6 +396,9 @@ finsight/
 ├── orchestration/
 │   ├── graph.py            # LangGraph StateGraph — nodes, Send fan-out, compiled singleton
 │   └── runner.py           # run_pipeline() — drives astream(), derives per-agent latencies
+├── memory/
+│   ├── store.py            # MemoryService — session recall/write, long-term recall (Qdrant)
+│   └── consolidate.py      # build_turn_text(), format_memory_context() — pure, no LLM call
 ├── agents/
 │   ├── router.py          # plan_task() — PlannerAgent, chat_completion (not a graph node)
 │   ├── retriever.py       # RetrieverAgent — hybrid retrieval, called from retrieve_analyze_node
@@ -415,8 +426,11 @@ finsight/
 │   │   ├── query_stream.py# POST /query/stream — SSE streaming pipeline
 │   │   ├── ingest.py      # POST /ingest/upload
 │   │   ├── eval.py        # GET /eval/*
+│   │   ├── sessions.py    # GET/DELETE /sessions/{id}
+│   │   ├── memory.py      # GET/DELETE /memory
 │   │   └── metrics.py     # GET /metrics
 │   ├── middleware/
+│   │   ├── auth.py        # API key → request.state.user_id (pure ASGI)
 │   │   └── guardrails.py  # Prompt injection detection (pure ASGI)
 │   └── static/
 │       ├── index.html     # Web UI — query interface + live pipeline visualiser

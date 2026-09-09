@@ -34,6 +34,8 @@ These are the invariants the design depends on. A change that breaks one needs a
 4. **One LLM dispatch point.** All model calls go through `core/groq_client.py` (retry → reserve → hedge). Don't instantiate an OpenAI client elsewhere.
 5. **Single process.** In-process state (compiled `StateGraph` singleton, BM25 cache, `MetricsStore`) assumes one uvicorn worker. Don't add state that breaks under that assumption without also making it shared.
 6. **Every run emits an `AuditLog`.** Even the failure/"insufficient evidence" paths.
+7. **Memory reaches the Planner only.** Recalled session/user context (`memory_context`) may shape `PLANNER_PROMPT`; it must never be threaded into `SYNTHESIZER_PROMPT` or any claim/citation path. That's what keeps a user's own unreviewed history from becoming an unverified figure in the report.
+8. **Memory failures degrade, never block.** `recall_memory`/`remember` nodes must catch and continue — a Qdrant/`finsight_memory` outage should cost a query its recalled context or its write, not the query itself.
 
 ## Making a change
 

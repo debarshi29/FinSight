@@ -144,6 +144,29 @@ Nodes emit progress via LangGraph's custom stream channel (`langgraph.config.get
 
 ---
 
+## Identity and Memory
+
+Two nodes bracket the pipeline: `recall_memory` (before `plan`) and `remember` (after `synthesize`), backed by `memory/store.py::MemoryService`. Both are best-effort — a Qdrant outage degrades to no recalled context / no write, never a failed query. See [DECISIONS.md](DECISIONS.md) Decision 12 for the full reasoning.
+
+**Identity.** `api/middleware/auth.py::AuthMiddleware` (pure ASGI, header-only) resolves `Authorization: Bearer <key>` to a `user_id` via `settings.api_keys` (`"key:user_id,..."`). Unconfigured (the default), every request is `user_id="anonymous"` — local dev, the eval harness, and CI need no setup. This is identity for scoping memory, not an account system: no RBAC, no signup, one flat key→id mapping.
+
+**Storage.** One new Qdrant collection, `finsight_memory`, holding `MemoryRecord` points (`core/models.py`): `memory_id, user_id, session_id, task_id, text, timestamp`. `retrieval/qdrant_store.py::QdrantStore` gained two additive constructor parameters (`collection`, `vector_size`) rather than a second client class, so every existing retrieval call site is unaffected. One record is written per completed turn — there is no separate LLM-based "consolidation" step, deliberately: a compliance system's memory should never be a new synthesis of what happened, only a record of it.
+
+**Recall — two different queries against the same records:**
+
+| | Short-term (this session) | Long-term (this user, across sessions) |
+|---|---|---|
+| Filter | `session_id` exact match | `user_id` exact match |
+| Ranking | Recency (`timestamp`) | Vector similarity to the current query |
+| Limit | `settings.session_max_turns` (6) | `settings.long_term_top_k` (3) |
+| Question answered | "What did we just discuss?" | "Has this user asked about this before?" |
+
+**Where memory can and cannot reach.** `memory/consolidate.py::format_memory_context` renders both into one text block, injected only into `PLANNER_PROMPT` (`agents/router.py::plan_task`'s new `memory_context` parameter). `SYNTHESIZER_PROMPT` is untouched. This is the load-bearing constraint: memory can bias what the Planner searches for, but it can never become a claim, because it never enters the claims/citations path the Auditor and Synthesizer operate on. A user's own unreviewed past queries shaping today's search terms is an acceptable UX tradeoff; the same content shaping today's *report* would not be.
+
+**Transparency.** `AuditLog` now carries `user_id` and `session_id`. `GET /sessions/{id}` and `GET /memory` let a caller inspect exactly what's recalled about them (their own records only — a 404, not silent filtering, on someone else's session); `DELETE` on both lets them clear it.
+
+---
+
 ## Retrieval Architecture
 
 The retrieval pipeline uses two separate scoring mechanisms combined via rank fusion, followed by neural reranking. Each stage has a distinct role.
@@ -441,6 +464,9 @@ finsight/
 ├── orchestration/
 │   ├── graph.py            # StateGraph — nodes, Send fan-out, FinSightState, compiled singleton
 │   └── runner.py           # run_pipeline() — astream() driver, per-agent latency accounting
+├── memory/
+│   ├── store.py            # MemoryService — session recall/write, long-term recall (Qdrant)
+│   └── consolidate.py      # build_turn_text(), format_memory_context() — pure, no LLM call
 ├── agents/
 │   ├── router.py          # plan_task() — PlannerAgent, chat_completion (not a graph node)
 │   ├── retriever.py       # RetrieverAgent — retrieve(), called from retrieve_analyze_node
@@ -466,8 +492,11 @@ finsight/
 │   │   ├── query.py       # POST /query — run_pipeline() over the compiled graph, blocking
 │   │   ├── query_stream.py# POST /query/stream — same graph, SSE progress events
 │   │   ├── ingest.py      # POST /ingest/upload
-│   │   └── eval.py        # GET /eval/*
+│   │   ├── eval.py        # GET /eval/*
+│   │   ├── sessions.py    # GET/DELETE /sessions/{id} — caller's own turns only
+│   │   └── memory.py      # GET/DELETE /memory — caller's own long-term records
 │   └── middleware/
+│       ├── auth.py        # API key → request.state.user_id (pure ASGI)
 │       └── guardrails.py  # prompt injection detection middleware
 ├── core/
 │   ├── prompts.py         # Planner/Synthesizer prompt templates
