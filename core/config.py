@@ -29,6 +29,15 @@ class Settings(BaseSettings):
 
     audit_log_dir: str = "audit_logs"
 
+    # Comma-separated "key:user_id" pairs, e.g. "sk_abc:alice,sk_def:bob".
+    # Empty (default) disables auth entirely — every request is "anonymous".
+    api_keys: str = ""
+
+    memory_collection: str = "finsight_memory"
+    memory_enabled: bool = True
+    session_max_turns: int = 6
+    long_term_top_k: int = 3
+
     otel_enabled: bool = False
     otel_endpoint: str = "http://localhost:4317"
 

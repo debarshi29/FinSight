@@ -136,6 +136,8 @@ class AuditLog:
     blocked_unverifiable: list[str]
     agents_invoked: list[str]
     latency_ms: int
+    user_id: str = "anonymous"
+    session_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -149,7 +151,45 @@ class AuditLog:
             "blocked_unverifiable": self.blocked_unverifiable,
             "agents_invoked": self.agents_invoked,
             "latency_ms": self.latency_ms,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
         }
+
+
+@dataclass
+class MemoryRecord:
+    """One completed conversational turn, written after synthesis and recalled by
+    the next turn — by ``session_id`` for short-term (recency) context, and by
+    ``user_id`` + vector similarity for long-term (cross-session) context. Same
+    record serves both; there is no separate consolidation step."""
+
+    memory_id: str
+    user_id: str
+    session_id: str
+    task_id: str
+    text: str
+    timestamp: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "memory_id": self.memory_id,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "task_id": self.task_id,
+            "text": self.text,
+            "timestamp": self.timestamp,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "MemoryRecord":
+        return cls(
+            memory_id=payload["memory_id"],
+            user_id=payload["user_id"],
+            session_id=payload["session_id"],
+            task_id=payload.get("task_id", ""),
+            text=payload["text"],
+            timestamp=payload["timestamp"],
+        )
 
 
 @dataclass
