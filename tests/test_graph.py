@@ -32,7 +32,15 @@ def _claim(text: str, status: AuditStatus = AuditStatus.VERIFIED) -> AuditedClai
 def test_build_graph_has_all_nodes():
     compiled = G.build_graph()
     nodes = set(compiled.get_graph().nodes)
-    assert {"plan", "retrieve_analyze", "audit", "compare", "synthesize"} <= nodes
+    assert {
+        "recall_memory",
+        "plan",
+        "retrieve_analyze",
+        "audit",
+        "compare",
+        "synthesize",
+        "remember",
+    } <= nodes
 
 
 def test_get_graph_is_singleton():
@@ -67,6 +75,14 @@ def test_initial_state_defaults(monkeypatch):
     assert st["query"] == "q" and st["task_id"] == "tid"
     assert st["subtask_results"] == [] and st["errors"] == []
     assert st["streaming"] is False
+    assert st["user_id"] == "anonymous"
+    assert st["session_id"]  # minted when not supplied
+
+
+def test_initial_state_reuses_supplied_session():
+    st = G.initial_state("q", "tid", user_id="alice", session_id="sess-1")
+    assert st["user_id"] == "alice"
+    assert st["session_id"] == "sess-1"
 
 
 class _FakeRetrieval:
@@ -74,9 +90,23 @@ class _FakeRetrieval:
         return []  # ranked_chunk_to_dict is never reached
 
 
+class _FakeMemory:
+    """No-op memory service — asserts these tests stay network-free even though
+    initial_state() now always sets a user_id/session_id."""
+
+    async def recall_session(self, session_id, limit=None):
+        return []
+
+    async def recall_long_term(self, user_id, query, top_k=None):
+        return []
+
+    async def write(self, *, user_id, session_id, task_id, text):
+        return None
+
+
 @pytest.fixture
 def stub_agents(monkeypatch):
-    async def fake_plan(query, *, streaming=False):
+    async def fake_plan(query, *, streaming=False, memory_context=""):
         return ["subtask one xxxx", "subtask two xxxx"]
 
     calls: dict[str, int] = {"analyze": 0, "audit": 0, "compare": 0, "synth": 0}
@@ -128,6 +158,7 @@ def stub_agents(monkeypatch):
         return "## Executive Summary\nok"
 
     monkeypatch.setattr(G, "plan_task", fake_plan)
+    monkeypatch.setattr(G, "get_memory_service", lambda: _FakeMemory())
     monkeypatch.setattr(G, "get_retrieval_service", lambda: _FakeRetrieval())
     monkeypatch.setattr(_FakeRetrieval, "retrieve", fake_retrieve_service_retrieve, raising=False)
     monkeypatch.setattr(G, "ranked_chunk_to_dict", fake_to_dict)
@@ -172,3 +203,59 @@ async def test_auditor_failure_aborts_run(stub_agents, monkeypatch):
     monkeypatch.setattr(G, "audit_claims", boom)
     with pytest.raises(Exception, match="auditor down"):
         await G.build_graph().ainvoke(G.initial_state("q", "tid-3"))
+
+
+async def test_memory_recall_reaches_planner(stub_agents, monkeypatch):
+    """memory_context flows recall_memory -> plan_task, and nowhere else."""
+    seen: dict = {}
+
+    class _RecallingMemory:
+        async def recall_session(self, session_id, limit=None):
+            return []
+
+        async def recall_long_term(self, user_id, query, top_k=None):
+            from core.models import MemoryRecord
+
+            return [MemoryRecord("m1", user_id, "s1", "t1", "past query about TCS", "now")]
+
+        async def write(self, **kw):
+            return None
+
+    async def fake_plan(query, *, streaming=False, memory_context=""):
+        seen["memory_context"] = memory_context
+        return ["subtask one xxxx"]
+
+    monkeypatch.setattr(G, "get_memory_service", lambda: _RecallingMemory())
+    monkeypatch.setattr(G, "plan_task", fake_plan)
+
+    await G.build_graph().ainvoke(G.initial_state("q", "tid-4", user_id="alice"))
+    assert "past query about TCS" in seen["memory_context"]
+
+
+async def test_memory_failure_degrades_to_no_context(stub_agents, monkeypatch):
+    class _BrokenMemory:
+        async def recall_session(self, session_id, limit=None):
+            raise RuntimeError("qdrant down")
+
+        async def recall_long_term(self, user_id, query, top_k=None):
+            raise RuntimeError("qdrant down")
+
+        async def write(self, **kw):
+            raise RuntimeError("qdrant down")
+
+    monkeypatch.setattr(G, "get_memory_service", lambda: _BrokenMemory())
+    final = await G.build_graph().ainvoke(G.initial_state("q", "tid-5", user_id="alice"))
+    # Run still completes end to end despite memory being entirely broken.
+    assert final["summary"].startswith("## Executive Summary")
+    assert final.get("memory_context", "") == ""
+
+
+async def test_memory_disabled_skips_recall(stub_agents, monkeypatch):
+    monkeypatch.setattr(G.settings, "memory_enabled", False)
+
+    def boom():
+        raise AssertionError("get_memory_service should not be called when disabled")
+
+    monkeypatch.setattr(G, "get_memory_service", boom)
+    final = await G.build_graph().ainvoke(G.initial_state("q", "tid-6", user_id="alice"))
+    assert final["summary"].startswith("## Executive Summary")
