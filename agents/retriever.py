@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import structlog
 from semantic_kernel.functions import kernel_function
@@ -17,8 +18,27 @@ from retrieval.reranker import rerank
 log = structlog.get_logger()
 
 
-class RetrieverPlugin:
-    """SK native plugin — wraps the full hybrid retrieval pipeline."""
+def ranked_chunk_to_dict(r: RankedChunk) -> dict:
+    """Serialise a RankedChunk to the wire shape the Analyst consumes."""
+    return {
+        "chunk_id": r.chunk.chunk_id,
+        "text": r.chunk.text,
+        "source": r.chunk.source,
+        "page": r.chunk.page,
+        "section_type": r.chunk.section_type.value,
+        "company": r.chunk.company,
+        "fiscal_year": r.chunk.fiscal_year,
+        "confidence": r.confidence_score,
+    }
+
+
+class RetrievalService:
+    """Framework-agnostic hybrid-retrieval capability.
+
+    Owns the Qdrant handle and the process-lifetime BM25 corpus cache. One
+    ``scroll_all`` per process; parallel callers share the single build via the
+    double-checked lock. Used directly by the orchestration graph.
+    """
 
     def __init__(self) -> None:
         self._store = QdrantStore()
@@ -27,19 +47,74 @@ class RetrieverPlugin:
         self._init_lock: asyncio.Lock = asyncio.Lock()
         self._collection_ready: bool = False
 
+    @property
+    def store(self) -> QdrantStore:
+        return self._store
+
     async def _ensure_bm25(self) -> None:
-        """Build BM25 index once; subsequent calls are no-ops. Lock prevents
-        concurrent parallel subtasks from each triggering a full scroll_all."""
+        """Build the BM25 index once; subsequent calls are no-ops. The lock
+        stops concurrent subtasks from each triggering a full scroll_all."""
         if self._bm25 is not None:
             return
         async with self._init_lock:
-            if self._bm25 is None:  # double-check after acquiring lock
+            if self._bm25 is None:  # double-check after acquiring the lock
                 if not self._collection_ready:
                     await self._store.ensure_collection()
                     self._collection_ready = True
                 self._all_payloads = await self._store.scroll_all()
                 self._bm25 = BM25Retriever(self._all_payloads)
                 log.info("retriever.bm25_built", corpus_size=len(self._all_payloads))
+
+    async def retrieve(
+        self,
+        subtask: str,
+        company_filter: str = "",
+        fiscal_year_filter: str = "",
+    ) -> list[RankedChunk]:
+        """Run the full hybrid pipeline for one subtask query."""
+        await self._ensure_bm25()  # no-op after the first call per process
+
+        filters: dict[str, str] = {}
+        if company_filter:
+            filters["company"] = company_filter
+        if fiscal_year_filter:
+            filters["fiscal_year"] = fiscal_year_filter
+
+        return await retrieve_chunks(
+            subtask,
+            self._store,
+            filters=filters or None,
+            bm25=self._bm25,
+            all_payloads=self._all_payloads,
+        )
+
+
+_service: RetrievalService | None = None
+
+
+def get_retrieval_service() -> RetrievalService:
+    """Return the process-wide RetrievalService singleton."""
+    global _service
+    if _service is None:
+        _service = RetrievalService()
+    return _service
+
+
+def reset_retrieval_service() -> None:
+    """Test hook — drop the cached service so the next call rebuilds it."""
+    global _service
+    _service = None
+
+
+class RetrieverPlugin:
+    """Semantic Kernel native-plugin shim over :class:`RetrievalService`.
+
+    Kept only while the SK kernel is still wired in; the orchestration graph
+    talks to ``RetrievalService`` directly.
+    """
+
+    def __init__(self) -> None:
+        self._service = get_retrieval_service()
 
     @kernel_function(name="retrieve", description="Retrieve relevant chunks for a subtask query")
     async def retrieve(
@@ -48,39 +123,9 @@ class RetrieverPlugin:
         company_filter: str = "",
         fiscal_year_filter: str = "",
     ) -> str:
-        """Returns a JSON string of ranked chunks with citations."""
-        import json
-
-        await self._ensure_bm25()  # no-op after first call per process lifetime
-
-        filters: dict[str, str] = {}
-        if company_filter:
-            filters["company"] = company_filter
-        if fiscal_year_filter:
-            filters["fiscal_year"] = fiscal_year_filter
-
-        ranked = await retrieve_chunks(
-            subtask,
-            self._store,
-            filters=filters or None,
-            bm25=self._bm25,
-            all_payloads=self._all_payloads,
-        )
-        return json.dumps(
-            [
-                {
-                    "chunk_id": r.chunk.chunk_id,
-                    "text": r.chunk.text,
-                    "source": r.chunk.source,
-                    "page": r.chunk.page,
-                    "section_type": r.chunk.section_type.value,
-                    "company": r.chunk.company,
-                    "fiscal_year": r.chunk.fiscal_year,
-                    "confidence": r.confidence_score,
-                }
-                for r in ranked
-            ]
-        )
+        """Return a JSON string of ranked chunks with citations."""
+        ranked = await self._service.retrieve(subtask, company_filter, fiscal_year_filter)
+        return json.dumps([ranked_chunk_to_dict(r) for r in ranked])
 
 
 async def retrieve_chunks(
