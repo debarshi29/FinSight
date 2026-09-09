@@ -324,6 +324,57 @@ latency-reduction strategies inherent to the graph's structure:
     cost.
 \end{itemize}
 
+\section{Identity and Memory}
+\label{sec:identity-memory}
+
+Two additional best-effort nodes bracket the pipeline: \code{recall\_memory}
+(before \code{plan}) and \code{remember} (after \code{synthesize}), backed by
+\file{memory/store.py}\code{::MemoryService}. A memory outage degrades to no
+recalled context / no write, never a failed query -- see
+\file{docs/DECISIONS.md} Decision~12 for the full reasoning.
+
+\textbf{Identity.} \file{api/middleware/auth.py}\code{::AuthMiddleware} (pure
+ASGI, header-only) resolves an \code{Authorization: Bearer <key>} header to a
+\code{user\_id} via \code{settings.api\_keys} (\code{"key:user\_id,..."}).
+Unconfigured (the default), every request is \code{user\_id="anonymous"} --
+local dev, the eval harness, and CI need no setup. This is identity for
+scoping memory, not an account system: no RBAC, one flat key\,\textrightarrow\,id
+mapping.
+
+\textbf{Storage.} One new Qdrant collection, \code{finsight\_memory}, holding
+\code{MemoryRecord} points: \code{memory\_id, user\_id, session\_id, task\_id,
+text, timestamp}. \file{retrieval/qdrant\_store.py}\code{::QdrantStore} gained
+two additive constructor parameters (\code{collection}, \code{vector\_size})
+rather than a second client class, so every existing retrieval call site is
+unaffected. One record is written per completed turn -- there is no separate
+LLM-based ``consolidation'' step, deliberately: a compliance system's memory
+should never be a new synthesis of what happened, only a record of it.
+
+\textbf{Recall} draws on the same records two different ways:
+
+\begin{itemize}
+    \item \textbf{Short-term} (this session): filter by \code{session\_id},
+    rank by recency, limit \code{settings.session\_max\_turns} (6).
+    \item \textbf{Long-term} (this user, across sessions): filter by
+    \code{user\_id}, rank by vector similarity to the current query, limit
+    \code{settings.long\_term\_top\_k} (3).
+\end{itemize}
+
+\textbf{Where memory can and cannot reach.}
+\file{memory/consolidate.py}\code{::format\_memory\_context} renders both into
+one text block, injected only into \code{PLANNER\_PROMPT} (via
+\code{agents/router.py}\code{::plan\_task}'s \code{memory\_context}
+parameter). \code{SYNTHESIZER\_PROMPT} is untouched. This is the load-bearing
+constraint: memory can bias what the Planner searches for, but it can never
+become a claim, because it never enters the claims/citations path the Auditor
+and Synthesizer operate on.
+
+\textbf{Transparency.} \code{AuditLog} now carries \code{user\_id} and
+\code{session\_id}. \code{GET /sessions/\{id\}} and \code{GET /memory} let a
+caller inspect exactly what is recalled about them (their own records only --
+a 404, not silent filtering, on someone else's session); \code{DELETE} on
+both clears it.
+
 % =============================================================================
 \chapter{Repository Layout}
 % =============================================================================
@@ -333,6 +384,9 @@ FinSight/
 |-- orchestration/              LangGraph StateGraph orchestration
 |   |-- graph.py                 FinSightState, nodes, Send fan-out, compiled singleton
 |   `-- runner.py                run_pipeline() - astream() driver, latency accounting
+|-- memory/                     Per-user session + cross-session memory
+|   |-- store.py                 MemoryService - session recall/write, long-term recall
+|   `-- consolidate.py           build_turn_text(), format_memory_context() - no LLM call
 |-- agents/                    Six-stage agent pipeline (graph nodes call these directly)
 |   |-- router.py               PlannerAgent - plan_task()
 |   |-- retriever.py            RetrieverAgent - RetrievalService, retrieve_chunks()
@@ -343,12 +397,15 @@ FinSight/
 |-- api/                        FastAPI application
 |   |-- main.py                 App factory, lifespan, static mounting, /health
 |   |-- metrics_store.py        In-process MetricsStore singleton
+|   |-- middleware/auth.py      API key -> request.state.user_id (pure ASGI)
 |   |-- middleware/guardrails.py  Prompt-injection detection (pure ASGI)
 |   |-- routes/
 |   |   |-- query.py             POST /query (blocking pipeline)
 |   |   |-- query_stream.py      POST /query/stream (SSE pipeline)
 |   |   |-- ingest.py            POST /ingest/upload
 |   |   |-- eval.py              GET /eval/*
+|   |   |-- sessions.py          GET/DELETE /sessions/{id}
+|   |   |-- memory.py            GET/DELETE /memory
 |   |   `-- metrics.py           GET /metrics/json
 |   `-- static/
 |       |-- index.html           Web UI (query interface + pipeline visualizer)
@@ -591,6 +648,42 @@ The prompt enforces: only verbatim figures with inline citations; an
 pre-labeled \code{[converted from ...]}; no arithmetic; explicit \code{N/A} for missing
 data; and a fixed GitHub-Flavored-Markdown section structure (Executive Summary / Key
 Findings / Comparative Analysis / Risk Flags).
+
+\section{Memory (\file{memory/})}
+\label{sec:memory-module}
+
+\subsection{\file{store.py} --- MemoryService}
+
+\begin{lstlisting}[language=Python]
+async def recall_session(self, session_id, limit=None) -> list[MemoryRecord]:
+async def recall_long_term(self, user_id, query, top_k=None) -> list[MemoryRecord]:
+async def write(self, *, user_id, session_id, task_id, text) -> MemoryRecord:
+\end{lstlisting}
+
+Wraps a \code{QdrantStore} pointed at \code{settings.memory\_collection}
+(\code{finsight\_memory}), lazily \code{ensure\_collection()}-ing on first use --
+the same lazy-init shape as \file{agents/retriever.py}\code{::RetrievalService}.
+\code{recall\_session} is an exact \code{session\_id} filter (\code{scroll\_filtered}),
+sorted by \code{timestamp}, most recent \code{settings.session\_max\_turns}.
+\code{recall\_long\_term} is a \code{user\_id}-filtered dense vector search on the
+embedding of the \emph{current} query. Called directly from
+\code{orchestration/graph.py}\code{::recall\_memory\_node} and
+\code{::remember\_node} -- no dispatch layer, same pattern as every other
+capability class in this codebase.
+
+\subsection{\file{consolidate.py}}
+
+\begin{lstlisting}[language=Python]
+def build_turn_text(query, subtasks, summary) -> str:
+def format_memory_context(short_term, long_term) -> str:
+\end{lstlisting}
+
+Pure functions, no LLM call. \code{build\_turn\_text} is exactly
+\code{"Query: ... \textbackslash nPlan: ... \textbackslash nSummary: ..."}
+truncated to a 400-character summary excerpt -- the memory record is what the
+pipeline already produced, never a new synthesis of it.
+\code{format\_memory\_context} renders recalled records into the block
+appended to \code{PLANNER\_PROMPT}; empty when nothing was recalled.
 
 \section{Core Infrastructure (\file{core/})}
 
@@ -837,7 +930,19 @@ class AuditLog:
     blocked_unverifiable: list[str]
     agents_invoked: list[str]
     latency_ms: int
+    user_id: str = "anonymous"
+    session_id: str = ""
     # to_dict()
+
+@dataclass
+class MemoryRecord:
+    memory_id: str
+    user_id: str
+    session_id: str
+    task_id: str
+    text: str
+    timestamp: str
+    # to_payload() / from_payload() -- Qdrant point payload, not to_dict()
 
 @dataclass
 class AnalysisReport:
@@ -860,6 +965,14 @@ Payload-level filtering is used for \code{company} during dense search directly 
 Qdrant; fiscal-year filtering is instead performed in-memory over the BM25 payload set,
 since Qdrant's filter requires exact string matches and fiscal-year expressions need
 substring/\code{"FY"}-prefix handling.
+
+Collection \code{finsight\_memory} (\code{settings.memory\_collection}): same
+384-dimensional / cosine configuration, reusing \code{retrieval/embedder.py}.
+Payload fields: \code{memory\_id}, \code{user\_id}, \code{session\_id},
+\code{task\_id}, \code{text}, \code{timestamp}. Short-term recall filters on
+\code{session\_id} (exact match, then sorted by \code{timestamp} in Python);
+long-term recall filters on \code{user\_id} and does a genuine dense vector
+search against the embedded current query.
 
 \section{Audit Log Example}
 \label{sec:auditlog}
@@ -908,11 +1021,12 @@ realistic query drift.
 \midrule
 \endhead
 \code{/query} & POST & \file{api/routes/query.py} & Blocking full pipeline. Body:
-\code{\{query, company\_filter?, fiscal\_year\_filter?, confidence\_threshold?\}}.
-Returns \code{AnalysisReport.to\_dict()}. \\
+\code{\{query, company\_filter?, fiscal\_year\_filter?, confidence\_threshold?,
+session\_id?\}}. Returns \code{AnalysisReport.to\_dict()} (whose
+\code{audit\_log} carries the \code{session\_id} to reuse for a follow-up). \\
 \code{/query/stream} & POST & \file{api/routes/query\_stream.py} & Server-Sent-Events
-streaming variant; events: \code{start, planned, retrieved, analyzed, audited,
-compared, done, error}. \\
+streaming variant, same request body; events: \code{start, memory\_recalled,
+planned, retrieved, analyzed, audited, compared, remembered, done, error}. \\
 \code{/ingest/upload} & POST & \file{api/routes/ingest.py} & Multipart PDF upload
 (\code{file=@x.pdf}), optional \code{doc\_id}, \code{overwrite} (default true).
 Triggers \code{ingest\_pdf()}. \\
@@ -922,6 +1036,11 @@ Triggers \code{ingest\_pdf()}. \\
 audit log filenames plus total count. \\
 \code{/eval/audit-logs/\{log\_id\}} & GET & \file{api/routes/eval.py} & Returns a
 specific audit log JSON (tolerant of a missing \code{.json} suffix). \\
+\code{/sessions/\{id\}} & GET, DELETE & \file{api/routes/sessions.py} & The caller's
+own turns for that session (404, not silent filtering, if it belongs to another
+user); delete clears it. \\
+\code{/memory} & GET, DELETE & \file{api/routes/memory.py} & The caller's own
+long-term memory records; delete wipes them. \\
 \code{/metrics/json} & GET & \file{api/routes/metrics.py} & Full metrics snapshot. \\
 \code{/health} & GET & \file{api/main.py} & Liveness probe: \code{\{"status": "ok",
 "model": <groq\_model>\}}. \\
@@ -932,10 +1051,13 @@ headers); static files mounted beneath. \\
 \bottomrule
 \end{longtable}
 
-All routes are protected globally by \code{GuardrailsMiddleware} (POST/PUT bodies
-scanned for prompt-injection patterns) and \code{CORSMiddleware}
-(\code{allow\_origins=["*"]}). Interactive Swagger documentation is auto-served by
-FastAPI at \code{/docs}.
+All routes except \code{/health}, \code{/ui*}, \code{/dashboard}, and \code{/docs}
+are protected by \code{AuthMiddleware} (\code{Authorization: Bearer <key>} $\to$
+\code{user\_id}, active only when \code{API\_KEYS} is configured -- see
+\S\ref{sec:identity-memory}) and \code{GuardrailsMiddleware} (POST/PUT bodies
+scanned for prompt-injection patterns); all routes sit behind
+\code{CORSMiddleware} (\code{allow\_origins=["*"]}). Interactive Swagger
+documentation is auto-served by FastAPI at \code{/docs}.
 
 \section{Streaming Query Route}
 
@@ -944,22 +1066,29 @@ ordered sequence of named events as each stage completes:
 
 \begin{center}
 \ttfamily
-start $\to$ planned $\to$ retrieved$^\ast$ $\to$ analyzed$^\ast$ $\to$ audited $\to$
-compared $\to$ done \quad(or \texttt{error} at any point)
+start $\to$ memory\_recalled $\to$ planned $\to$ retrieved$^\ast$ $\to$
+analyzed$^\ast$ $\to$ audited $\to$ compared $\to$ remembered $\to$ done
+\quad(or \texttt{error} at any point)
 \end{center}
 
-\noindent(\textsuperscript{$\ast$}emitted once per subtask). Subtasks are run in
-parallel via a \code{\_run\_subtask()} helper; the Planner call uses
-\code{chat\_completion\_hedged()}.
+\noindent(\textsuperscript{$\ast$}emitted once per subtask). Both routes drive
+the same compiled \code{StateGraph} through
+\file{orchestration/runner.py}\code{::run\_pipeline()}; the streaming route
+passes an \code{on\_event} callback that forwards each custom-stream event
+into the SSE response via an \code{asyncio.Queue}.
 
 \section{Shared Route Helpers}
 
-\file{api/routes/query.py} defines a \code{QueryRequest} Pydantic model (\code{query},
-\code{company\_filter}, \code{fiscal\_year\_filter}, \code{confidence\_threshold}) and
-several helpers reused by both the blocking and streaming routes:
-\code{\_parse\_subtasks()}, \code{\_parse\_audit\_result()}, \code{\_safe\_confidence()},
-\code{\_deserialize\_claims()}, and \code{\_save\_audit\_log()} (writes to
-\code{settings.audit\_log\_dir/<task\_id>.json}).
+\file{api/routes/query.py} defines the \code{QueryRequest} Pydantic model
+(\code{query}, \code{company\_filter}, \code{fiscal\_year\_filter},
+\code{confidence\_threshold}, \code{session\_id}) and \code{\_save\_audit\_log()}
+(writes to \code{settings.audit\_log\_dir/<task\_id>.json}), reused by both
+routes. \code{user\_id} is read from \code{request.state.user\_id} (set by
+\code{AuthMiddleware}), never from the request body, so a caller cannot spoof
+another user's identity. Subtask parsing and audit-result deserialisation --
+route-level helpers in the Semantic Kernel era, reparsing JSON strings -- no
+longer exist as separate functions: \code{orchestration.graph.FinSightState}
+carries typed values end to end.
 
 \section{Guardrails Middleware}
 
@@ -973,6 +1102,21 @@ downstream \code{receive()} call, and subsequent calls delegate to the real
 \code{receive}. This specific replay design exists to remain compatible with SSE
 streaming responses, which \code{BaseHTTPMiddleware} cannot support without buffering
 the entire response.
+
+\section{Auth Middleware}
+
+\code{AuthMiddleware} (\file{api/middleware/auth.py}) is also pure ASGI, but
+header-only -- it never buffers the request body, so it needs none of
+\code{GuardrailsMiddleware}'s receive-patching. It reads
+\code{Authorization: Bearer <key>} from \code{scope["headers"]} and resolves it
+against \code{settings.api\_keys} (parsed as \code{"key:user\_id,..."}). Empty
+\code{API\_KEYS} (the default) skips straight to \code{user\_id="anonymous"};
+configured, a missing or unknown key gets a \code{401 JSONResponse} before any
+handler runs, on every path except \code{/health}, \code{/ui*},
+\code{/dashboard}, \code{/docs}, and \code{/openapi.json}. Registered after
+\code{GuardrailsMiddleware} in \file{api/main.py} so it executes \emph{first}
+(Starlette runs middleware in reverse add-order) -- a bad key is rejected
+before the body is buffered and scanned.
 
 \section{Metrics Store}
 
@@ -1027,6 +1171,11 @@ service) \\
 \code{confidence\_threshold} & \code{0.65} & VERIFIED cutoff \\
 \code{hallucination\_fallback\_threshold} & \code{0.50} & UNCERTAIN floor \\
 \code{audit\_log\_dir} & \code{audit\_logs} & Per-run audit log output directory \\
+\code{api\_keys} & \code{""} & Comma-separated \code{key:user\_id} pairs. Empty disables auth -- every caller is \code{user\_id="anonymous"} \\
+\code{memory\_collection} & \code{finsight\_memory} & Qdrant collection for \code{MemoryRecord}s \\
+\code{memory\_enabled} & \code{true} & Kill switch -- \code{false} skips \code{recall\_memory}/\code{remember} entirely \\
+\code{session\_max\_turns} & \code{6} & Max short-term turns recalled per session \\
+\code{long\_term\_top\_k} & \code{3} & Max long-term records recalled per query \\
 \code{otel\_enabled} & \code{false} & Enable OpenTelemetry export \\
 \code{otel\_endpoint} & \code{http://localhost:4317} & OTLP gRPC endpoint \\
 \code{log\_level} & \code{INFO} & Log verbosity \\
@@ -1049,6 +1198,8 @@ Framework: \textbf{pytest} + \textbf{pytest-asyncio}
 (\code{asyncio\_mode = "auto"}), \code{testpaths = ["tests"]}. All tests are pure unit
 tests of deterministic logic with no live dependency on Qdrant or Groq.
 
+134 tests total.
+
 \begin{description}
     \item[\file{test\_chunker.py}] \code{\_make\_chunk\_id()} determinism/uniqueness;
     \code{\_deduplicate()} behavior (exact-duplicate removal, order preservation,
@@ -1061,7 +1212,8 @@ tests of deterministic logic with no live dependency on Qdrant or Groq.
     \code{detect\_company()} (including the TCS alias).
     \item[\file{test\_models.py}] Dataclass round-trips: \code{Citation.to\_dict()},
     \code{Chunk.to\_payload()}/\code{from\_payload()}, \code{AuditedClaim} for every
-    \code{AuditStatus}, default-field handling.
+    \code{AuditStatus}, \code{MemoryRecord} round-trip, \code{AuditLog}
+    \code{user\_id}/\code{session\_id} defaults.
     \item[\file{test\_retrieval.py}] \code{\_tokenize()}, \code{BM25Retriever.search()},
     \code{reciprocal\_rank\_fusion()} (including an exact RRF score assertion of
     $2/61$ and rank-1-vs-rank-2 tie behavior).
@@ -1071,10 +1223,27 @@ tests of deterministic logic with no live dependency on Qdrant or Groq.
     crore/lakh/million/billion conversions, idempotency on already-converted labels,
     non-mutation of input dicts, and edge cases (zero, decimals, Indian comma
     grouping, mixed currencies within one sentence).
+    \item[\file{test\_graph.py}] \code{StateGraph} construction (all seven nodes
+    present, including \code{recall\_memory}/\code{remember}), \code{fan\_out}
+    \code{Send} shape, a stubbed end-to-end run through \code{build\_graph()},
+    the auditor-abort / comparator-degrade error paths, and memory-specific
+    cases: recalled context reaches \code{plan\_task} and nowhere else, a
+    broken memory service degrades to no context without failing the run,
+    \code{memory\_enabled=False} skips recall entirely.
+    \item[\file{test\_memory.py}] \code{build\_turn\_text()} /
+    \code{format\_memory\_context()} as pure functions -- no Qdrant.
+    \item[\file{test\_auth.py}] \code{AuthMiddleware} -- key parsing, bearer-token
+    extraction, anonymous pass-through when unconfigured, 401 on missing/bad key
+    when configured, exempt-path bypass. First test in the suite to exercise ASGI
+    middleware directly, via \code{httpx.ASGITransport}.
 \end{description}
 
 No integration tests exercise the live FastAPI app, Qdrant, or Groq directly within
-\file{tests/} -- that role is filled instead by the evaluation harness described below.
+\file{tests/} -- \file{test\_auth.py} is the one exception, wrapping a minimal
+Starlette app (not the full \code{create\_app()}) purely to drive real ASGI
+request/response plumbing without pulling in Qdrant/embedding-model imports.
+End-to-end exercise of the live app is otherwise the evaluation harness's role,
+described below.
 
 \section{Evaluation Harness}
 
@@ -1119,13 +1288,17 @@ Each run writes a timestamped \file{harness\_<epoch>.json} summary to
 
 \section{Recorded Results}
 
-\file{evaluation/results/} contains 12 historical run artifacts. A representative
-happy-path run (\file{harness\_1783872558.json}) reports a \textbf{4/4 pass rate
-(1.0)}, with per-test latency ranging 7.6--26.3\,s -- e.g., the cross-company
-revenue-growth comparison query returned 17 verified claims in 22.9\,s. The project
-README states currently published scores of \textbf{4/4 on the happy-path set and 3/4
-on the adversarial set}, the fourth adversarial case intentionally timing out by
-design on a five-company cross-domain query that forces excessive subtask fan-out.
+\file{evaluation/results/} accumulates timestamped run artifacts (git-ignored). A
+representative happy-path run reports a \textbf{4/4 pass rate (1.0)}, with
+per-test latency ranging roughly 8--30\,s -- e.g. the cross-company
+revenue-growth comparison query returns close to 20 verified claims. The
+project README states currently published scores of \textbf{4/4 on the
+happy-path set and 4/4 on the adversarial set}; the previous 3/4 was a timeout
+on a five-company cross-domain query, resolved once the audit/compare
+superstep (\S\ref{sec:identity-memory}'s parent chapter) removed the
+sequential-latency cause. Re-verified against this identity/memory change:
+still 4/4 / 4/4, since recalled memory only ever reaches the Planner prompt
+and cannot affect claim verification.
 
 % =============================================================================
 \chapter{Build, Deployment, and CI}
@@ -1239,6 +1412,18 @@ verified directly against the source.
     are one LangGraph superstep -- two nodes with the same incoming edge and no edge
     between them -- so the concurrency holds on \emph{both} the blocking and streaming
     routes, not only the streaming route as before the LangGraph migration.
+    \item \textbf{Per-user identity and short/long-term memory} (\file{docs/DECISIONS.md}
+    Decision~12, 2026-09-09). Simple \code{API\_KEYS} $\to$ \code{user\_id}
+    mapping (not full accounts/RBAC) scopes a new Qdrant collection,
+    \code{finsight\_memory}, recalled by two best-effort graph nodes bracketing
+    the pipeline. The load-bearing constraint: recalled memory reaches
+    \code{PLANNER\_PROMPT} only, never \code{SYNTHESIZER\_PROMPT} -- it can
+    bias what gets searched for, never what gets asserted as a claim, so a
+    user's own unreviewed history can never become an unverified figure in the
+    report. No LLM-based memory consolidation step exists, deliberately: each
+    \code{MemoryRecord} is exactly what the pipeline already produced (query +
+    plan + summary excerpt), traceable to a real \code{task\_id}, never a new
+    synthesis of it.
     \item \textbf{Section-type confidence weights in code differ slightly from
     documented values} (Table~\ref{tab:section-weights}); the code is authoritative
     for actual system behavior.
