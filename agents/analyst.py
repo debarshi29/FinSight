@@ -5,7 +5,6 @@ import re
 from typing import Any
 
 import structlog
-from semantic_kernel.functions import kernel_function
 
 from core.config import settings
 from core.groq_client import chat_completion
@@ -44,21 +43,6 @@ Output ONLY valid JSON — no markdown fences, no explanation:
     }
   ]
 }"""
-
-
-class AnalystPlugin:
-    """SK native plugin — extracts KPIs and claims from retrieved chunks."""
-
-    @kernel_function(name="analyze", description="Extract KPIs and claims from retrieved chunks")
-    async def analyze(self, subtask: str, chunks_json: str) -> str:
-        import json
-
-        try:
-            chunks_data = json.loads(chunks_json)
-        except json.JSONDecodeError:
-            return json.dumps({"kpis": [], "claims": []})
-        result = await analyze_chunks(subtask, chunks_data)
-        return json.dumps(result)
 
 
 async def analyze_chunks(
