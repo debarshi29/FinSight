@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import structlog
-from semantic_kernel.functions import kernel_function
 
 from core.config import settings
 from core.models import RankedChunk
@@ -104,28 +102,6 @@ def reset_retrieval_service() -> None:
     """Test hook — drop the cached service so the next call rebuilds it."""
     global _service
     _service = None
-
-
-class RetrieverPlugin:
-    """Semantic Kernel native-plugin shim over :class:`RetrievalService`.
-
-    Kept only while the SK kernel is still wired in; the orchestration graph
-    talks to ``RetrievalService`` directly.
-    """
-
-    def __init__(self) -> None:
-        self._service = get_retrieval_service()
-
-    @kernel_function(name="retrieve", description="Retrieve relevant chunks for a subtask query")
-    async def retrieve(
-        self,
-        subtask: str,
-        company_filter: str = "",
-        fiscal_year_filter: str = "",
-    ) -> str:
-        """Return a JSON string of ranked chunks with citations."""
-        ranked = await self._service.retrieve(subtask, company_filter, fiscal_year_filter)
-        return json.dumps([ranked_chunk_to_dict(r) for r in ranked])
 
 
 async def retrieve_chunks(
